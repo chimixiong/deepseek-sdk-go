@@ -104,11 +104,16 @@ func decodeEvent(raw deepseek.SSEEvent) (Event, bool, error) {
 	var head struct {
 		Type  EventType    `json:"type"`
 		Error *StreamError `json:"error"`
+		Usage *Usage       `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &head); err != nil {
 		return Event{}, false, fmt.Errorf("messages: decode event %q: %w", raw.Event, err)
 	}
 	event := Event{Type: head.Type, Error: head.Error, Raw: append(json.RawMessage(nil), data...)}
+	if head.Error != nil {
+		// A failed generation carries the billed usage on the error event.
+		event.Usage = head.Usage
+	}
 	if event.Type == "" {
 		event.Type = EventType(raw.Event)
 	}
@@ -175,18 +180,28 @@ func decodeEvent(raw deepseek.SSEEvent) (Event, bool, error) {
 // ErrStreamIncomplete reports a stream that closed before message_stop.
 var ErrStreamIncomplete = errors.New("messages: stream ended before message_stop")
 
+// maxContentBlocks bounds the sparse block index accepted from the server. The
+// protocol defines no limit; this keeps a malformed or hostile index from
+// allocating unbounded memory.
+const maxContentBlocks = 4096
+
 // Aggregate consumes a stream and assembles the final message. Text, thinking,
 // signatures, citations and tool inputs are accumulated per content block;
 // message_delta counters are merged into the message_start usage (see
 // mergeUsage), and the last message_delta stop reason wins. The partial message
 // is returned together with any error, including ErrStreamIncomplete.
 func Aggregate(seq iter.Seq2[Event, error]) (*Response, error) {
+	if seq == nil {
+		return nil, deepseek.Invalid("stream", "must not be nil")
+	}
 	acc := &accumulator{}
 	for event, err := range seq {
 		if err != nil {
+			_ = acc.finishPending()
 			return acc.response(), err
 		}
 		if err := acc.apply(event); err != nil {
+			_ = acc.finishPending()
 			return acc.response(), err
 		}
 	}
@@ -195,6 +210,9 @@ func Aggregate(seq iter.Seq2[Event, error]) (*Response, error) {
 	}
 	if !acc.stopped {
 		return acc.response(), ErrStreamIncomplete
+	}
+	if acc.message == nil {
+		return nil, errors.New("messages: stream ended without message_start")
 	}
 	return acc.response(), nil
 }
@@ -213,6 +231,7 @@ func (a *accumulator) apply(event Event) error {
 			return errors.New("messages: message_start event without a message")
 		}
 		message := *event.Message
+		message.Usage = cloneUsage(message.Usage)
 		a.message = &message
 		a.blocks = nil
 		a.partials = nil
@@ -225,7 +244,9 @@ func (a *accumulator) apply(event Event) error {
 			a.message = &Response{}
 		}
 		block := *event.Block
-		a.setBlock(event.Index, &block)
+		if err := a.setBlock(event.Index, &block); err != nil {
+			return err
+		}
 	case EventContentBlockDelta:
 		if event.Delta == nil {
 			return errors.New("messages: content_block_delta event without a delta")
@@ -263,13 +284,23 @@ func (a *accumulator) apply(event Event) error {
 		if event.StopSequence != nil {
 			a.message.StopSequence = new(*event.StopSequence)
 		}
-		a.message.StopDetails = event.StopDetails
+		if event.StopDetails != nil {
+			a.message.StopDetails = event.StopDetails
+		}
 		if event.Title != nil {
 			a.message.Title = new(*event.Title)
 		}
 	case EventMessageStop:
 		a.stopped = true
 	case EventError:
+		// A failed generation still bills the work done so far; fold its usage
+		// into the partial message before returning the error.
+		if event.Usage != nil {
+			if a.message == nil {
+				a.message = &Response{}
+			}
+			mergeUsage(&a.message.Usage, event.Usage)
+		}
 		if event.Error != nil {
 			return event.Error
 		}
@@ -278,11 +309,15 @@ func (a *accumulator) apply(event Event) error {
 	return nil
 }
 
-func (a *accumulator) setBlock(index int, block *Block) {
+func (a *accumulator) setBlock(index int, block *Block) error {
+	if index < 0 || index >= maxContentBlocks {
+		return fmt.Errorf("messages: content block index %d is out of range [0,%d)", index, maxContentBlocks)
+	}
 	for len(a.blocks) <= index {
 		a.blocks = append(a.blocks, nil)
 	}
 	a.blocks[index] = block
+	return nil
 }
 
 func (a *accumulator) block(index int) (*Block, error) {

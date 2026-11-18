@@ -29,7 +29,11 @@ func main() {
 		case responses.EventOutputTextDelta:
 			fmt.Print(event.Delta)
 		case responses.EventFailed:
-			fmt.Printf("\nstream failed: %+v\n", event.Response.Error)
+			if event.Response != nil && event.Response.Error != nil {
+				fmt.Printf("\nstream failed: %+v\n", event.Response.Error)
+				continue
+			}
+			fmt.Printf("\nstream failed\n")
 		}
 	}
 	fmt.Println()

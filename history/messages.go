@@ -46,6 +46,7 @@ func FromMessages(msgs []messages.Message, system *messages.Content) (Transcript
 			}
 			transcript.Turns = appendTurn(transcript.Turns, Turn{Role: RoleUser, Parts: parts})
 		case messages.RoleAssistant:
+			pending = map[string]bool{}
 			parts, partWarnings := messagesBlocksToIR(message.Content.Blocks, index)
 			warnings = append(warnings, partWarnings...)
 			if message.Content.Blocks == nil && message.Content.Text != "" {
@@ -84,7 +85,8 @@ func ToMessages(transcript Transcript, options Options) (*messages.Content, []me
 	if transcript.System != "" {
 		system = &messages.Content{Text: transcript.System}
 	}
-	for index, turn := range transcript.Turns {
+	for _, merged := range mergedTurns(transcript.Turns) {
+		index, turn := merged.index, merged.turn
 		switch turn.Role {
 		case RoleAssistant:
 			blocks, turnWarnings := irPartsToMessages(turn.Parts, index, options)
@@ -157,6 +159,7 @@ func messagesUserBlocks(parts []Part, index int, options Options, pending map[st
 			inner, innerWarnings := irPartsToMessages(part.ToolResult.Parts, index, options)
 			warnings = append(warnings, innerWarnings...)
 			inner = dropUserToolUse(inner, index, &warnings)
+			inner = filterToolResultBlocks(inner, index, &warnings)
 			value := messages.Content{Blocks: inner}
 			if len(inner) == 0 {
 				value = messages.Content{Text: ""}
@@ -190,6 +193,22 @@ func dropUserToolUse(blocks []messages.Block, index int, warnings *[]Warning) []
 			continue
 		}
 		kept = append(kept, block)
+	}
+	return kept
+}
+
+// filterToolResultBlocks enforces the API rule that tool_result content holds
+// only text and image blocks.
+func filterToolResultBlocks(blocks []messages.Block, index int, warnings *[]Warning) []messages.Block {
+	var kept []messages.Block
+	for _, block := range blocks {
+		switch block.Type {
+		case messages.BlockText, messages.BlockImage:
+			kept = append(kept, block)
+		default:
+			*warnings = append(*warnings, warning(index, "tool_result.content",
+				fmt.Sprintf("%s blocks are not allowed in tool_result content; dropped", block.Type)))
+		}
 	}
 	return kept
 }

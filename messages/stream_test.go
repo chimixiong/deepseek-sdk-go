@@ -8,6 +8,7 @@ import (
 	"iter"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	deepseek "github.com/chimixiong/deepseek-sdk-go"
@@ -289,5 +290,88 @@ func TestAggregateMessageDeltaUsageMerge(t *testing.T) {
 	}
 	if usage.ServerToolUse == nil || usage.ServerToolUse.WebFetchRequests == nil || *usage.ServerToolUse.WebFetchRequests != 1 {
 		t.Fatalf("server_tool_use = %+v", usage.ServerToolUse)
+	}
+}
+
+func TestAggregateErrorEventUsage(t *testing.T) {
+	resp, err := Aggregate(eventsSeq(
+		Event{Type: EventMessageStart, Message: &Response{ID: "msg_e", Usage: Usage{InputTokens: 4, OutputTokens: 1}}},
+		Event{Type: EventError, Error: &StreamError{Type: "api_error", Message: "boom"}, Usage: &Usage{InputTokens: 4, OutputTokens: 7}},
+	))
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) {
+		t.Fatalf("error = %#v, want *StreamError", err)
+	}
+	if resp == nil || resp.Usage.OutputTokens != 7 {
+		t.Fatalf("usage = %+v, want the billed usage from the error event", resp)
+	}
+}
+
+func TestAggregateRejectsInvalidBlockIndex(t *testing.T) {
+	for _, index := range []int{-1, maxContentBlocks} {
+		_, err := Aggregate(eventsSeq(Event{
+			Type:  EventContentBlockStart,
+			Index: index,
+			Block: &Block{Type: BlockText},
+		}))
+		if err == nil || !strings.Contains(err.Error(), "out of range") {
+			t.Errorf("index %d: err = %v, want an out-of-range error", index, err)
+		}
+	}
+}
+
+func TestAggregateMessageStopWithoutStart(t *testing.T) {
+	resp, err := Aggregate(eventsSeq(Event{Type: EventMessageStop}))
+	if err == nil || !strings.Contains(err.Error(), "without message_start") {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+	if resp != nil {
+		t.Fatalf("resp = %+v, want nil", resp)
+	}
+}
+
+func TestAggregateNilStream(t *testing.T) {
+	var seq iter.Seq2[Event, error]
+	_, err := Aggregate(seq)
+	var validation *deepseek.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("err = %v, want *deepseek.ValidationError", err)
+	}
+}
+
+func TestAggregateDoesNotMutateMessageStartUsage(t *testing.T) {
+	fetch := 1
+	start := &Response{
+		ID: "msg_1",
+		Usage: Usage{
+			OutputTokens:        1,
+			OutputTokensDetails: &OutputTokensDetails{ThinkingTokens: 1},
+			ServerToolUse:       &ServerToolUsage{WebFetchRequests: &fetch},
+		},
+	}
+	deltaFetch := 5
+	resp, err := Aggregate(eventsSeq(
+		Event{Type: EventMessageStart, Message: start},
+		Event{Type: EventMessageDelta, Usage: &Usage{
+			OutputTokens:        30,
+			OutputTokensDetails: &OutputTokensDetails{ThinkingTokens: 30},
+			ServerToolUse:       &ServerToolUsage{WebFetchRequests: &deltaFetch},
+		}},
+		Event{Type: EventMessageStop},
+	))
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if start.Usage.OutputTokensDetails.ThinkingTokens != 1 {
+		t.Fatalf("start thinking tokens = %d, want 1", start.Usage.OutputTokensDetails.ThinkingTokens)
+	}
+	if start.Usage.ServerToolUse.WebFetchRequests == nil || *start.Usage.ServerToolUse.WebFetchRequests != 1 {
+		t.Fatalf("start web fetch requests = %v, want 1", start.Usage.ServerToolUse.WebFetchRequests)
+	}
+	if resp.Usage.OutputTokens != 30 || resp.Usage.OutputTokensDetails.ThinkingTokens != 30 {
+		t.Fatalf("aggregated usage = %+v", resp.Usage)
+	}
+	if resp.Usage.ServerToolUse.WebFetchRequests == nil || *resp.Usage.ServerToolUse.WebFetchRequests != 5 {
+		t.Fatalf("aggregated web fetch requests = %v, want 5", resp.Usage.ServerToolUse.WebFetchRequests)
 	}
 }

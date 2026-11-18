@@ -36,6 +36,9 @@ type OCRRequest struct {
 	Purpose OCRPurpose `json:"purpose"`
 }
 
+// maxOCRBytes is the documented upload limit.
+const maxOCRBytes = 100 << 20
+
 // Validate reports the documented request constraints.
 func (r *OCRRequest) Validate() error {
 	if r == nil {
@@ -43,6 +46,9 @@ func (r *OCRRequest) Validate() error {
 	}
 	if len(r.File) == 0 {
 		return deepseek.Invalid("file", "must not be empty")
+	}
+	if len(r.File) > maxOCRBytes {
+		return deepseek.Invalid("file", "must be at most %d MiB, got %d bytes", maxOCRBytes>>20, len(r.File))
 	}
 	if r.Filename == "" {
 		return deepseek.Invalid("filename", "must not be empty")
@@ -66,6 +72,10 @@ type OCRResponse struct {
 	PageCount int    `json:"page_count"`
 	Pages     []Page `json:"pages"`
 	Usage     Usage  `json:"usage"`
+	// Error is set when recognition fails after the 200 status line, for
+	// example on a timeout. OCR returns it as an error alongside the decoded
+	// response.
+	Error *deepseek.ResponseError `json:"error,omitempty"`
 }
 
 // Page is one recognized page.
@@ -107,6 +117,9 @@ func (c *Client) OCR(ctx context.Context, req *OCRRequest) (*OCRResponse, error)
 	}, &out)
 	if err != nil {
 		return nil, err
+	}
+	if out.Error != nil {
+		return &out, out.Error
 	}
 	return &out, nil
 }

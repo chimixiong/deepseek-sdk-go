@@ -39,6 +39,8 @@ func NewBeta(c *deepseek.Client) *Client {
 }
 
 // Create sends a non-streaming request and returns the first choice response.
+// A 200 response whose body carries a generation error is returned with that
+// error, so the billed usage stays readable.
 func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
@@ -50,6 +52,9 @@ func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	var resp Response
 	if err := c.core.DoJSON(ctx, &deepseek.Request{URL: c.url, JSON: wire}, &resp); err != nil {
 		return nil, err
+	}
+	if resp.Error != nil {
+		return &resp, resp.Error
 	}
 	if len(resp.Choices) == 0 {
 		return nil, errors.New("deepseek/chat: response has no choices")
@@ -77,9 +82,13 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Chunk
 			return
 		}
 		defer stream.Close()
+		done := false
 		for {
 			event, err := stream.Next()
 			if err == io.EOF {
+				if !done {
+					yield(Chunk{}, errors.New("deepseek/chat: stream ended before [DONE]"))
+				}
 				return
 			}
 			if err != nil {
@@ -87,11 +96,16 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Chunk
 				return
 			}
 			if string(event.Data) == "[DONE]" {
+				done = true
 				return
 			}
 			var chunk Chunk
 			if err := json.Unmarshal(event.Data, &chunk); err != nil {
 				yield(Chunk{}, fmt.Errorf("deepseek/chat: decode chunk: %w", err))
+				return
+			}
+			if chunk.Error != nil {
+				yield(chunk, chunk.Error)
 				return
 			}
 			if !yield(chunk, nil) {
@@ -101,17 +115,19 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Chunk
 	}
 }
 
-// Accumulate drains a stream into one assembled non-streaming response.
+// Accumulate drains a stream into one assembled response. On error it returns
+// the partial response assembled so far, so usage from a failed generation
+// stays readable, matching messages.Aggregate.
 func Accumulate(seq iter.Seq2[Chunk, error]) (*Response, error) {
 	if seq == nil {
 		return nil, deepseek.Invalid("stream", "must not be nil")
 	}
 	acc := &StreamAccumulator{}
 	for chunk, err := range seq {
-		if err != nil {
-			return nil, err
-		}
 		acc.Add(chunk)
+		if err != nil {
+			return acc.Response(), err
+		}
 	}
 	return acc.Response(), nil
 }

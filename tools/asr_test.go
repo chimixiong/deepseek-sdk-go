@@ -91,3 +91,12 @@ func TestASRAPIError(t *testing.T) {
 		t.Fatalf("message = %q", apiErr.Message)
 	}
 }
+
+func TestASRSizeLimit(t *testing.T) {
+	c := newTestClient(t, noRequest(t))
+	_, err := c.ASR(context.Background(), &ASRRequest{
+		File:     make([]byte, maxASRBytes+1),
+		Filename: "a.wav",
+	})
+	requireValidationError(t, err, "file")
+}

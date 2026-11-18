@@ -1,6 +1,19 @@
 package files
 
-import "github.com/chimixiong/deepseek-sdk-go"
+import (
+	"mime"
+	"path/filepath"
+	"strings"
+
+	"github.com/chimixiong/deepseek-sdk-go"
+)
+
+const (
+	maxFilenameBytes     = 512
+	maxImageFileBytes    = 64 << 20
+	maxDocumentFileBytes = 100 << 20
+	maxTextFileBytes     = 32 << 20
+)
 
 // Purpose is the intended use of an uploaded file.
 type Purpose string
@@ -46,11 +59,22 @@ func (r *CreateRequest) Validate() error {
 	if r.Purpose == "" {
 		return deepseek.Invalid("purpose", "is required")
 	}
+	switch r.Purpose {
+	case PurposeUserData, PurposeTextRecognition, PurposeRichLayoutRecognition:
+	default:
+		return deepseek.Invalid("purpose", "must be %q, %q or %q", PurposeUserData, PurposeTextRecognition, PurposeRichLayoutRecognition)
+	}
 	if r.Filename == "" {
 		return deepseek.Invalid("file", "filename is required")
 	}
+	if len(r.Filename) > maxFilenameBytes {
+		return deepseek.Invalid("file", "filename must be at most %d bytes, got %d", maxFilenameBytes, len(r.Filename))
+	}
 	if len(r.File) == 0 {
 		return deepseek.Invalid("file", "content is required")
+	}
+	if limit := fileSizeLimit(r.ContentType, r.Filename); len(r.File) > limit {
+		return deepseek.Invalid("file", "content must be at most %d MiB for this file type, got %d MiB", limit>>20, len(r.File)>>20)
 	}
 	if r.ExpiresAfter != nil {
 		if r.ExpiresAfter.Anchor != "" && r.ExpiresAfter.Anchor != AnchorCreatedAt {
@@ -61,6 +85,40 @@ func (r *CreateRequest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// fileSizeLimit returns the documented upload limit for a file. The service
+// chooses the limit by file type, not by purpose.
+func fileSizeLimit(contentType, filename string) int {
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil {
+		switch {
+		case strings.HasPrefix(mediaType, "image/"):
+			return maxImageFileBytes
+		case mediaType == "application/pdf",
+			mediaType == "application/msword",
+			mediaType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			mediaType == "application/vnd.ms-powerpoint",
+			mediaType == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+			return maxDocumentFileBytes
+		case strings.HasPrefix(mediaType, "text/"),
+			mediaType == "application/vnd.ms-excel",
+			mediaType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			mediaType == "application/epub+zip",
+			mediaType == "application/x-mobipocket-ebook":
+			return maxTextFileBytes
+		}
+	}
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff":
+		return maxImageFileBytes
+	case ".pdf", ".doc", ".docx", ".ppt", ".pptx":
+		return maxDocumentFileBytes
+	case ".txt", ".md", ".csv", ".tsv", ".xls", ".xlsx", ".epub", ".mobi", ".rtf", ".odt":
+		return maxTextFileBytes
+	}
+	// Unknown types get the largest documented limit; the server still
+	// classifies the content.
+	return maxDocumentFileBytes
 }
 
 // Order is the sort direction for file listings.
@@ -89,6 +147,11 @@ func (o *ListOptions) validate() error {
 	}
 	if o.Order != "" && o.Order != OrderAsc && o.Order != OrderDesc {
 		return deepseek.Invalid("order", "must be %q or %q", OrderAsc, OrderDesc)
+	}
+	switch o.Purpose {
+	case "", PurposeUserData, PurposeTextRecognition, PurposeRichLayoutRecognition:
+	default:
+		return deepseek.Invalid("purpose", "must be %q, %q or %q", PurposeUserData, PurposeTextRecognition, PurposeRichLayoutRecognition)
 	}
 	return nil
 }

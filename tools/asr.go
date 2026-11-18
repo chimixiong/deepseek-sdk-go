@@ -16,6 +16,9 @@ type ASRRequest struct {
 	Filename string `json:"-"`
 }
 
+// maxASRBytes is the documented upload limit.
+const maxASRBytes = 8 << 20
+
 // Validate reports the documented request constraints.
 func (r *ASRRequest) Validate() error {
 	if r == nil {
@@ -23,6 +26,9 @@ func (r *ASRRequest) Validate() error {
 	}
 	if len(r.File) == 0 {
 		return deepseek.Invalid("file", "must not be empty")
+	}
+	if len(r.File) > maxASRBytes {
+		return deepseek.Invalid("file", "must be at most %d MiB, got %d", maxASRBytes>>20, len(r.File)>>20)
 	}
 	if r.Filename == "" {
 		return deepseek.Invalid("filename", "must not be empty")

@@ -196,3 +196,31 @@ func TestNewNilClient(t *testing.T) {
 		t.Fatal("chat.NewBeta(nil) returned nil")
 	}
 }
+
+func TestCreateReturnsGenerationError(t *testing.T) {
+	client, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{
+			"id":"chat-1","object":"chat.completion","created":1,"model":"deepseek-flash",
+			"choices":[],
+			"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,
+				"prompt_tokens_details":{"cached_tokens":0},
+				"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":3},
+			"error":{"message":"The model failed to generate a complete response. Please retry.","type":"api_error"}
+		}`)
+	})
+
+	resp, err := client.Create(context.Background(), &chat.Request{
+		Model:    "deepseek-flash",
+		Messages: []chat.Message{chat.UserMessage("hi")},
+	})
+	var generationErr *deepseek.ResponseError
+	if !errors.As(err, &generationErr) {
+		t.Fatalf("err = %v, want *deepseek.ResponseError", err)
+	}
+	if generationErr.Type != "api_error" || !strings.Contains(generationErr.Message, "retry") {
+		t.Fatalf("generation error = %+v", generationErr)
+	}
+	if resp == nil || resp.Usage == nil || resp.Usage.TotalTokens != 4 {
+		t.Fatalf("response = %+v, want the billed usage", resp)
+	}
+}

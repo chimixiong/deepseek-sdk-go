@@ -54,8 +54,11 @@ func (t EventType) Terminal() bool {
 // Event is one semantic streaming event. Fields that do not apply to the event
 // type stay empty. Unknown event types and unmodelled fields are preserved.
 type Event struct {
-	Type           EventType `json:"type"`
-	SequenceNumber int       `json:"sequence_number,omitempty"`
+	Type EventType `json:"type"`
+	// SequenceNumber is the server's event sequence number. It is passed
+	// through verbatim; the SDK does not reject duplicates or gaps. Consumers
+	// that need stream-integrity checks must track it themselves.
+	SequenceNumber int `json:"sequence_number,omitempty"`
 
 	// Response is set on created, in_progress and the terminal events.
 	Response *Response `json:"response,omitempty"`
@@ -114,19 +117,27 @@ func (e Event) Terminal() bool { return e.Type.Terminal() }
 
 // Accumulate drains a stream and returns the response carried by the terminal
 // event. It fails when the stream ends without response.completed,
-// response.incomplete or response.failed.
+// response.incomplete or response.failed. A successful terminal event ends the
+// read immediately, so a connection reset after it cannot discard the response.
 func Accumulate(seq iter.Seq2[Event, error]) (*Response, error) {
+	if seq == nil {
+		return nil, deepseek.Invalid("stream", "must not be nil")
+	}
 	var final *Response
 	for event, err := range seq {
 		if err != nil {
-			return nil, err
+			return final, err
 		}
 		if event.Terminal() {
 			final = event.Response
+			break
 		}
 	}
 	if final == nil {
 		return nil, errors.New("deepseek/responses: stream ended without a terminal response event")
+	}
+	if err := final.failureError(); err != nil {
+		return final, err
 	}
 	return final, nil
 }

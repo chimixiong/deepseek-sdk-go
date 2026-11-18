@@ -23,9 +23,9 @@ func FromChat(messages []chat.Message) (Transcript, []Warning) {
 	for _, message := range messages {
 		switch message.Role {
 		case chat.RoleSystem:
-			system = append(system, chatText(message.Content, &warnings, len(transcript.Turns))...)
+			system = append(system, chatText(message.Content, &warnings, -1)...)
 			if message.Content.Parts != nil {
-				warnings = append(warnings, warning(len(transcript.Turns), "system.content", "blocks flattened to text"))
+				warnings = append(warnings, warning(-1, "system.content", "blocks flattened to text"))
 			}
 		case chat.RoleUser:
 			parts, partWarnings := chatPartsToIR(message.Content, len(transcript.Turns))
@@ -108,7 +108,8 @@ func ToChat(transcript Transcript, options Options) ([]chat.Message, []Warning) 
 	if transcript.System != "" {
 		messages = append(messages, chat.SystemMessage(transcript.System))
 	}
-	for index, turn := range transcript.Turns {
+	for _, merged := range mergedTurns(transcript.Turns) {
+		index, turn := merged.index, merged.turn
 		switch turn.Role {
 		case RoleAssistant:
 			pending = map[string]bool{}
@@ -312,7 +313,8 @@ func chatImagePart(image Image, index int) chat.ContentPart {
 
 func chatFileRef(file File) chat.FileRef {
 	if file.FileID != "" {
-		return chat.FileRef{FileID: file.FileID, Filename: file.Filename}
+		// filename is only valid with file_data; the service rejects the pair.
+		return chat.FileRef{FileID: file.FileID}
 	}
 	mediaType := file.MediaType
 	if mediaType == "" {

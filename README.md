@@ -27,7 +27,8 @@ core := deepseek.New(deepseek.Config{
 })
 ```
 
-The transport retries 429/5xx and network errors with exponential backoff,
+The transport retries 408, 429, 500, 502, 503, 504 and network errors with
+exponential backoff,
 honours `Retry-After`, parses both OpenAI-shaped and Anthropic-shaped errors into
 `*deepseek.APIError`, and exposes request ids from `x-request-id` /
 `x-ds-trace-id`.
@@ -71,7 +72,8 @@ for chunk, err := range client.CreateStream(ctx, request) {
 ```
 
 `chat.Accumulate` drains a stream into one `*chat.Response`, concatenating tool
-call argument fragments by index.
+call argument fragments by index. On error it returns the partial response
+alongside the error, so usage from a failed generation stays readable.
 
 Thinking mode:
 - `Thinking` and `ReasoningEffort` map to `thinking` and `reasoning_effort`.
@@ -124,15 +126,36 @@ OCR and ASR take `[]byte` payloads plus a filename and encode multipart in the
 documented order. `Speak` returns the response body unread so audio can be
 copied while it is produced.
 
+Multipart bodies are encoded in memory once so a retry can replay them. A
+request therefore holds the payload roughly twice: the `[]byte` you pass plus
+the encoded body. `Validate` caps uploads at 8 MiB for ASR, 100 MiB for OCR, and
+64/100/32 MiB for Files images, documents and text/spreadsheets/ebooks.
+
 ## Semantics
 
 - Optional scalars are pointers, so "unset" and zero are distinct.
 - `Request.Validate` checks documented structural constraints before any network
   call and returns `*deepseek.ValidationError`.
-- Requests carry `Extra`, and responses keep open objects as
-  `json.RawMessage`, so new DeepSeek fields do not require a release.
+- Requests carry `Extra` for fields the SDK does not model, and responses keep
+  open objects as `json.RawMessage`, so new DeepSeek fields do not require a
+  release. An `Extra` key that names a modelled field is rejected rather than
+  silently overriding it.
 - Streaming errors surface from the iterator; retries happen only before the
   first byte of a stream or audio response.
+- A generation that fails after the status line still returns HTTP 200.
+  Chat Completions and Messages bill the tokens produced and include `usage`
+  in the error body. `chat.Create` and `messages.Create` detect that `error`
+  object, return `*deepseek.ResponseError` and hand back the decoded response
+  so its `usage` stays readable. Streaming callers see the error from the
+  iterator: Chat Completions sets `Chunk.Error`, Messages sends an `error`
+  event carrying the billed usage; `chat.Accumulate` also returns the partial
+  response.
+- `tools.OCR` detects a 200 `error` object and returns
+  `*deepseek.ResponseError` with the decoded response. OCR error bodies carry
+  no `usage`, and failed or timed-out OCR is not billed.
+- `chat.ChunkChoice.ServerToolEvent` exposes the streaming web-tool progress
+  events (`step_reasoning_done`, `call_started`, `call_completed`) verbatim; the
+  complete `server_tool_calls` and `annotations` arrive on the final chunk.
 
 ## Switching protocols
 
@@ -168,6 +191,7 @@ environment and fall back to the nearest `.env` file, so
 | `go run ./examples/messages` | `POST /anthropic/v1/messages` with thinking signature |
 | `go run ./examples/messages_stream` | Messages event stream |
 | `go run ./examples/fim` | `POST /beta/completions` |
+| `go run ./examples/fim_stream` | FIM completion stream |
 | `go run ./examples/models` | `GET /models` |
 | `go run ./examples/balance` | `GET /user/balance` |
 | `go run ./examples/files` | create, list, retrieve and delete a file |

@@ -1,7 +1,7 @@
 // Command ocr_tts recognizes text in a document and speaks the first page to a
 // WAV file.
 //
-//	go run ./examples/ocr_tts page.png speech.wav
+//	go run ./examples/ocr_tts page.pdf speech.wav
 package main
 
 import (
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	ex "github.com/chimixiong/deepseek-sdk-go/examples/internal/exutil"
 
@@ -32,7 +33,7 @@ func main() {
 	client := tools.New(ex.NewClient())
 	recognized, err := client.OCR(ctx, &tools.OCRRequest{
 		File:     payload,
-		Filename: inputPath,
+		Filename: filepath.Base(inputPath),
 		Purpose:  tools.OCRTextRecognition,
 	})
 	if err != nil {

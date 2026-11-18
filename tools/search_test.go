@@ -191,3 +191,14 @@ func TestNilClient(t *testing.T) {
 		t.Fatal("DeepSeek() on nil client must be nil")
 	}
 }
+
+func TestSearchExtraCannotOverrideCount(t *testing.T) {
+	c := newTestClient(t, noRequest(t))
+	_, err := c.Search(context.Background(), &SearchRequest{
+		Query: "q",
+		Extra: map[string]json.RawMessage{"count": json.RawMessage(`999`)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicates a modelled field") {
+		t.Fatalf("err = %v, want the Extra override to be rejected", err)
+	}
+}

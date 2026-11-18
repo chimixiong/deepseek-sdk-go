@@ -9,6 +9,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -42,6 +43,12 @@ func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	var resp Response
 	if err := c.core.DoJSON(ctx, &deepseek.Request{URL: c.url, JSON: req.prepared(false)}, &resp); err != nil {
 		return nil, err
+	}
+	if err := resp.failureError(); err != nil {
+		return &resp, err
+	}
+	if resp.ID == "" || resp.Status == "" {
+		return nil, errors.New("deepseek/responses: empty response: missing id or status")
 	}
 	return &resp, nil
 }

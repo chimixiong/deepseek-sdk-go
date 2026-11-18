@@ -36,7 +36,7 @@ func (r *FetchRequest) Validate() error {
 	if err != nil {
 		return deepseek.Invalid("url", "must be a valid URL: %v", err)
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return deepseek.Invalid("url", "must be an absolute HTTP or HTTPS URL with a host")
 	}
 	if u.User != nil {

@@ -18,7 +18,12 @@ func FromResponse(response *responses.Response) (Transcript, []Warning) {
 	}
 	transcript, warnings := FromResponsesItems(response.Output)
 	if response.Instructions != nil {
-		transcript.System = *response.Instructions
+		if transcript.System != "" && *response.Instructions != "" {
+			transcript.System = transcript.System + "\n\n" + *response.Instructions
+			warnings = append(warnings, warning(-1, "system", "instructions joined with the system prompt from output items"))
+		} else if *response.Instructions != "" {
+			transcript.System = *response.Instructions
+		}
 	}
 	return transcript, warnings
 }
@@ -42,7 +47,7 @@ func FromResponsesItems(items []responses.OutputItem) (Transcript, []Warning) {
 				if len(parts) > 0 {
 					system = append(system, Texts(parts))
 				}
-				warnings = append(warnings, warning(index, "role", "system message moved to the transcript system prompt"))
+				warnings = append(warnings, warning(-1, "role", "system message moved to the transcript system prompt"))
 			case responses.RoleAssistant, "":
 				if len(parts) > 0 {
 					transcript.Turns = appendTurn(transcript.Turns, Turn{Role: RoleAssistant, Parts: parts})
@@ -103,7 +108,7 @@ func FromResponsesInput(items []responses.InputItem) (Transcript, []Warning) {
 				if len(parts) > 0 {
 					system = append(system, Texts(parts))
 				}
-				warnings = append(warnings, warning(index, "role", "system message moved to the transcript system prompt"))
+				warnings = append(warnings, warning(-1, "role", "system message moved to the transcript system prompt"))
 			case responses.RoleAssistant:
 				if len(parts) > 0 {
 					transcript.Turns = appendTurn(transcript.Turns, Turn{Role: RoleAssistant, Parts: parts})
@@ -161,7 +166,8 @@ func ToResponses(transcript Transcript, options Options) (string, []responses.In
 		warnings []Warning
 	)
 	pending := map[string]bool{}
-	for index, turn := range transcript.Turns {
+	for _, merged := range mergedTurns(transcript.Turns) {
+		index, turn := merged.index, merged.turn
 		switch turn.Role {
 		case RoleAssistant:
 			pending = map[string]bool{}

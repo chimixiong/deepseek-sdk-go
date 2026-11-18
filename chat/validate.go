@@ -2,10 +2,14 @@ package chat
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/chimixiong/deepseek-sdk-go"
 )
+
+// toolNamePattern matches the documented function name constraint.
+var toolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Validate checks the documented structural constraints without a network
 // call. Streaming-only fields are rejected here; CreateStream uses an internal
@@ -39,6 +43,9 @@ func (r *Request) validate(streaming bool) error {
 		if sequence == "" {
 			return deepseek.Invalid("stop", "must not contain an empty sequence")
 		}
+		if len(sequence) > 512 {
+			return deepseek.Invalid("stop", "each sequence must not exceed 512 bytes, got %d", len(sequence))
+		}
 	}
 	if r.MaxTokens != nil && (*r.MaxTokens < 1 || *r.MaxTokens > 393216) {
 		return deepseek.Invalid("max_tokens", "must be between 1 and 393216")
@@ -57,7 +64,7 @@ func (r *Request) validate(streaming bool) error {
 			return deepseek.Invalid("top_logprobs", "requires logprobs to be true")
 		}
 	}
-	if r.StreamOptions != nil && !streaming {
+	if r.StreamOptions != nil && !streaming && (r.Stream == nil || !*r.Stream) {
 		return deepseek.Invalid("stream_options", "is only valid for CreateStream")
 	}
 	if r.ResponseFormat != nil {
@@ -77,7 +84,7 @@ func (r *Request) validate(streaming bool) error {
 	if r.ReasoningEffort != "" {
 		switch r.ReasoningEffort {
 		case EffortNone, EffortLow, EffortHigh, EffortMax,
-			"minimal", "medium", "xhigh", "ultra": // documented aliases
+			EffortMinimal, EffortMedium, EffortXHigh: // documented aliases
 		default:
 			return deepseek.Invalid("reasoning_effort", "unsupported value %q", r.ReasoningEffort)
 		}
@@ -92,22 +99,42 @@ func (r *Request) validate(streaming bool) error {
 	if len(r.UserID) > 512 {
 		return deepseek.Invalid("user_id", "must not exceed 512 bytes")
 	}
-	for i, tool := range r.Tools {
-		field := fmt.Sprintf("tools[%d]", i)
-		switch tool.Type {
-		case ToolFunction:
-			if tool.Function == nil {
-				return deepseek.Invalid(field+".function", "is required for a function tool")
+	if len(r.Tools) > 0 {
+		seen := make(map[string]bool, len(r.Tools))
+		for i, tool := range r.Tools {
+			field := fmt.Sprintf("tools[%d]", i)
+			var name string
+			switch tool.Type {
+			case ToolFunction:
+				if tool.Function == nil {
+					return deepseek.Invalid(field+".function", "is required for a function tool")
+				}
+				name = tool.Function.Name
+				if name == "" {
+					return deepseek.Invalid(field+".function.name", "is required")
+				}
+				if len(name) > 128 {
+					return deepseek.Invalid(field+".function.name", "must not exceed 128 characters, got %d", len(name))
+				}
+				if !toolNamePattern.MatchString(name) {
+					return deepseek.Invalid(field+".function.name", "must match %s, got %q", toolNamePattern, name)
+				}
+			case ToolWebSearch, ToolReadURL:
+				if tool.Function != nil {
+					return deepseek.Invalid(field+".function", "is not allowed for server-side tools")
+				}
+				name = string(tool.Type)
+			default:
+				return deepseek.Invalid(field+".type", "unsupported value %q", tool.Type)
 			}
-			if tool.Function.Name == "" {
-				return deepseek.Invalid(field+".function.name", "is required")
+			if seen[name] {
+				duplicateField := field + ".type"
+				if tool.Type == ToolFunction {
+					duplicateField = field + ".function.name"
+				}
+				return deepseek.Invalid(duplicateField, "duplicate tool name %q", name)
 			}
-		case ToolWebSearch, ToolReadURL:
-			if tool.Function != nil {
-				return deepseek.Invalid(field+".function", "is not allowed for server-side tools")
-			}
-		default:
-			return deepseek.Invalid(field+".type", "unsupported value %q", tool.Type)
+			seen[name] = true
 		}
 	}
 	if r.ToolChoice != nil {
@@ -128,6 +155,12 @@ func validateToolChoice(r *Request) error {
 		if choice.Mode != "" {
 			return deepseek.Invalid("tool_choice", "cannot set both a mode and a function")
 		}
+		if declaredServerTool(r.Tools, choice.Function) {
+			return deepseek.Invalid("tool_choice", "%q cannot be forced; the model decides when to use it", choice.Function)
+		}
+		if !declaredFunctionTool(r.Tools, choice.Function) {
+			return deepseek.Invalid("tool_choice.function.name", "function %q is not declared in tools", choice.Function)
+		}
 		if thinking {
 			return deepseek.Invalid("tool_choice", "a named function is not supported in thinking mode")
 		}
@@ -137,6 +170,9 @@ func validateToolChoice(r *Request) error {
 	case ToolChoiceNone, ToolChoiceAuto:
 		return nil
 	case ToolChoiceRequired:
+		if len(r.Tools) == 0 {
+			return deepseek.Invalid("tool_choice", `"required" needs at least one tool`)
+		}
 		if thinking {
 			return deepseek.Invalid("tool_choice", "required is not supported in thinking mode")
 		}
@@ -146,12 +182,38 @@ func validateToolChoice(r *Request) error {
 	}
 }
 
+// declaredServerTool reports whether name is a server-side tool enabled by the
+// request. The service only rejects forcing a server tool that is declared.
+func declaredServerTool(tools []Tool, name string) bool {
+	for _, tool := range tools {
+		switch tool.Type {
+		case ToolWebSearch, ToolReadURL:
+			if string(tool.Type) == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func declaredFunctionTool(tools []Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Type == ToolFunction && tool.Function != nil && tool.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func validateMessage(index int, m Message) error {
 	field := fmt.Sprintf("messages[%d]", index)
 	switch m.Role {
 	case RoleSystem:
 		if m.Content.Null || m.Content.Parts != nil {
 			return deepseek.Invalid(field+".content", "system content must be a string")
+		}
+		if err := validateContent(field+".content", m.Content, false, false); err != nil {
+			return err
 		}
 	case RoleUser:
 		if m.ToolCallID != "" {
@@ -167,6 +229,9 @@ func validateMessage(index int, m Message) error {
 		if m.Content.Parts != nil {
 			return deepseek.Invalid(field+".content", "assistant content must be a string or null")
 		}
+		if m.Content.Null && len(m.ToolCalls) == 0 {
+			return deepseek.Invalid(field+".content", "null content requires tool_calls")
+		}
 		if m.ToolCallID != "" {
 			return deepseek.Invalid(field+".tool_call_id", "is not valid on an assistant message")
 		}
@@ -177,10 +242,16 @@ func validateMessage(index int, m Message) error {
 		if len(m.ToolCalls) > 0 {
 			return deepseek.Invalid(field+".tool_calls", "is not valid on a tool message")
 		}
-		if err := validateContent(field+".content", m.Content, false, true); err != nil {
+		if err := validateContent(field+".content", m.Content, false, false); err != nil {
 			return err
 		}
 	case RoleLatestReminder:
+		if m.ToolCallID != "" {
+			return deepseek.Invalid(field+".tool_call_id", "is not valid on a latest_reminder message")
+		}
+		if len(m.ToolCalls) > 0 {
+			return deepseek.Invalid(field+".tool_calls", "is not valid on a latest_reminder message")
+		}
 		if m.Content.Null || m.Content.Parts != nil || strings.TrimSpace(m.Content.Text) == "" {
 			return deepseek.Invalid(field+".content", "must be a non-empty <date>,<weekday>,<location>,<platform>,<language> string")
 		}

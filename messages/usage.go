@@ -45,6 +45,35 @@ type ServerToolUsage struct {
 	ToolImageSearch *int `json:"tool_image_search,omitempty"`
 }
 
+func cloneUsage(usage Usage) Usage {
+	if usage.OutputTokensDetails != nil {
+		details := *usage.OutputTokensDetails
+		usage.OutputTokensDetails = &details
+	}
+	if usage.ServerToolUse != nil {
+		usage.ServerToolUse = cloneServerToolUsage(usage.ServerToolUse)
+	}
+	return usage
+}
+
+func cloneServerToolUsage(tools *ServerToolUsage) *ServerToolUsage {
+	if tools == nil {
+		return nil
+	}
+	cloned := *tools
+	cloned.WebFetchRequests = cloneInt(cloned.WebFetchRequests)
+	cloned.ToolFetch = cloneInt(cloned.ToolFetch)
+	cloned.ToolImageSearch = cloneInt(cloned.ToolImageSearch)
+	return &cloned
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	return new(*value)
+}
+
 // mergeUsage folds a message_delta usage into the accumulated usage.
 // Anthropic sends output_tokens as a cumulative total and only repeats the
 // message_start counters when the cache changed, so every counter is merged by
@@ -73,8 +102,7 @@ func mergeUsage(dst *Usage, delta *Usage) {
 		return
 	}
 	if dst.ServerToolUse == nil {
-		value := *delta.ServerToolUse
-		dst.ServerToolUse = &value
+		dst.ServerToolUse = cloneServerToolUsage(delta.ServerToolUse)
 		return
 	}
 	dst.ServerToolUse.WebSearchRequests = max(dst.ServerToolUse.WebSearchRequests, delta.ServerToolUse.WebSearchRequests)

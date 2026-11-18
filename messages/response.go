@@ -1,7 +1,12 @@
 package messages
 
+import deepseek "github.com/chimixiong/deepseek-sdk-go"
+
 // MessageType is the type of a Messages API response.
 const MessageType = "message"
+
+// TypeError is the type of a failed generation body.
+const TypeError = "error"
 
 // StopReason says why generation ended.
 type StopReason string
@@ -16,7 +21,9 @@ const (
 )
 
 // Response is a Messages API message, both non-streaming and the value carried
-// by message_start.
+// by message_start. A failed generation keeps the 200 status line and returns a
+// body of type "error" with the billed usage; Create returns it as an error
+// alongside the decoded response.
 type Response struct {
 	ID           string       `json:"id"`
 	Type         string       `json:"type"`
@@ -28,6 +35,8 @@ type Response struct {
 	StopDetails  *StopDetails `json:"stop_details,omitempty"`
 	Title        *string      `json:"title,omitempty"`
 	Usage        Usage        `json:"usage"`
+	// Error is set on a generation failure returned with a 200 status line.
+	Error *deepseek.ResponseError `json:"error,omitempty"`
 }
 
 // StopDetails explains a refusal stop.

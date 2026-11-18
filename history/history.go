@@ -150,6 +150,27 @@ func warning(turn int, field, reason string) Warning {
 	return Warning{Turn: turn, Field: field, Reason: reason}
 }
 
+// indexedTurn pairs a merged turn with the index of its first source turn so
+// To* warnings keep referring to Transcript.Turns.
+type indexedTurn struct {
+	index int
+	turn  Turn
+}
+
+// mergedTurns applies the documented adjacent-same-role merge to a transcript
+// before a To* conversion.
+func mergedTurns(turns []Turn) []indexedTurn {
+	var out []indexedTurn
+	for i, turn := range turns {
+		if len(out) > 0 && out[len(out)-1].turn.Role == turn.Role {
+			out[len(out)-1].turn.Parts = append(out[len(out)-1].turn.Parts, turn.Parts...)
+			continue
+		}
+		out = append(out, indexedTurn{index: i, turn: turn})
+	}
+	return out
+}
+
 func unpairedResultReason(callID string) string {
 	return fmt.Sprintf("no matching tool call %q", callID)
 }

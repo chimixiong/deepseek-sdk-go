@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 )
 
 // BlockType identifies a content block in a request or response.
@@ -263,52 +265,106 @@ type Block struct {
 	// Fetch is the content object of a web_fetch_tool_result block.
 	Fetch *WebFetchResult
 
-	// Raw preserves blocks whose type the SDK does not model.
+	// Raw is the original block payload. Unknown fields inside a known block
+	// type are preserved when the block is encoded again.
 	Raw json.RawMessage
+}
+
+// mergeBlockJSON merges modelled fields over the original payload so fields
+// added to a known block type survive a decode/encode round trip while fields
+// the caller removed stay removed.
+func mergeBlockJSON(raw json.RawMessage, modelled any) ([]byte, error) {
+	encoded, err := json.Marshal(modelled)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return encoded, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	var current map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &current); err != nil {
+		return nil, err
+	}
+	for _, name := range jsonFieldNames(modelled) {
+		delete(fields, name)
+	}
+	for key, value := range current {
+		fields[key] = value
+	}
+	return json.Marshal(fields)
+}
+
+func jsonFieldNames(v any) []string {
+	t := reflect.TypeOf(v)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+	names := make([]string, 0, t.NumField())
+	for i := range t.NumField() {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" {
+			name = field.Name
+		}
+		if name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // MarshalJSON encodes the block selected by Type.
 func (b Block) MarshalJSON() ([]byte, error) {
 	switch b.Type {
 	case BlockText:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type      BlockType  `json:"type"`
 			Text      string     `json:"text"`
 			Citations []Citation `json:"citations,omitempty"`
 		}{b.Type, b.Text, b.Citations})
 	case BlockImage:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type   BlockType `json:"type"`
 			Source *Source   `json:"source"`
 		}{b.Type, b.Source})
 	case BlockDocument:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type   BlockType `json:"type"`
 			Source *Source   `json:"source"`
 			Title  *string   `json:"title,omitempty"`
 		}{b.Type, b.Source, b.Title})
 	case BlockToolResult:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type      BlockType `json:"type"`
 			ToolUseID string    `json:"tool_use_id"`
 			Content   *Content  `json:"content,omitempty"`
 			IsError   *bool     `json:"is_error,omitempty"`
 		}{b.Type, b.ToolUseID, b.Content, b.IsError})
 	case BlockThinking:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type      BlockType `json:"type"`
 			Thinking  string    `json:"thinking"`
 			Signature *string   `json:"signature,omitempty"`
 		}{b.Type, b.Thinking, b.Signature})
 	case BlockToolUse:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type  BlockType       `json:"type"`
 			ID    string          `json:"id"`
 			Name  string          `json:"name"`
 			Input json.RawMessage `json:"input"`
 		}{b.Type, b.ID, b.Name, b.inputOrDefault()})
 	case BlockServerToolUse:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type   BlockType       `json:"type"`
 			ID     string          `json:"id"`
 			Name   string          `json:"name"`
@@ -321,14 +377,14 @@ func (b Block) MarshalJSON() ([]byte, error) {
 		if results == nil {
 			results = []WebSearchResult{}
 		}
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type      BlockType         `json:"type"`
 			ToolUseID string            `json:"tool_use_id"`
 			Content   []WebSearchResult `json:"content"`
 			Kind      WebToolKind       `json:"kind,omitempty"`
 		}{b.Type, b.ToolUseID, results, b.Kind})
 	case BlockWebFetchToolResult:
-		return json.Marshal(struct {
+		return mergeBlockJSON(b.Raw, struct {
 			Type      BlockType       `json:"type"`
 			ToolUseID string          `json:"tool_use_id"`
 			Content   *WebFetchResult `json:"content"`
@@ -348,7 +404,9 @@ func (b Block) MarshalJSON() ([]byte, error) {
 	}
 }
 
-// UnmarshalJSON decodes a block by its type. Unknown types are preserved in Raw.
+// UnmarshalJSON decodes a block by its type. Raw keeps the original payload,
+// so unknown fields survive re-encoding and unknown types are passed through
+// verbatim.
 func (b *Block) UnmarshalJSON(data []byte) error {
 	*b = Block{}
 	var head struct {
@@ -358,6 +416,7 @@ func (b *Block) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("messages: decode content block: %w", err)
 	}
 	b.Type = head.Type
+	b.Raw = append(json.RawMessage(nil), data...)
 	switch head.Type {
 	case BlockText:
 		var wire struct {

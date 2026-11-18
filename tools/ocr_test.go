@@ -3,9 +3,12 @@ package tools
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
+
+	"github.com/chimixiong/deepseek-sdk-go"
 )
 
 const ocrFixture = `{
@@ -176,5 +179,27 @@ func TestOCRLongFinishReason(t *testing.T) {
 	}
 	if resp.Pages[0].FinishReason != OCRFinishLength {
 		t.Fatalf("finish_reason = %q, want length", resp.Pages[0].FinishReason)
+	}
+}
+
+func TestOCRReturnsGenerationError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `
+{"error":{"message":"OCR did not finish in time","type":"gateway_timeout_error","param":null,"code":"gateway_timeout_error"}}`)
+	})
+	resp, err := c.OCR(context.Background(), &OCRRequest{
+		File:     []byte("fake"),
+		Filename: "document.pdf",
+		Purpose:  OCRTextRecognition,
+	})
+	var generationErr *deepseek.ResponseError
+	if !errors.As(err, &generationErr) {
+		t.Fatalf("err = %v, want *deepseek.ResponseError", err)
+	}
+	if generationErr.Code != "gateway_timeout_error" {
+		t.Fatalf("generation error = %+v", generationErr)
+	}
+	if resp == nil {
+		t.Fatal("response must be returned alongside the error")
 	}
 }

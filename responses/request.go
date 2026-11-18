@@ -78,8 +78,22 @@ func (r *Request) Validate() error {
 	if r.TopLogprobs != nil && (*r.TopLogprobs < 0 || *r.TopLogprobs > 20) {
 		return deepseek.Invalid("top_logprobs", "must be between 0 and 20, got %d", *r.TopLogprobs)
 	}
-	if r.SafetyCheck != nil && r.SafetyCheck.Level == "" {
-		return deepseek.Invalid("safety_check.level", "is required")
+	if r.User != nil && len(*r.User) > 512 {
+		return deepseek.Invalid("user", "must not exceed 512 bytes, got %d", len(*r.User))
+	}
+	if r.SafetyCheck != nil {
+		switch r.SafetyCheck.Level {
+		case SafetyLow, SafetyHigh:
+		default:
+			return deepseek.Invalid("safety_check.level", "must be %q or %q, got %q", SafetyLow, SafetyHigh, r.SafetyCheck.Level)
+		}
+	}
+	if r.Reasoning != nil && r.Reasoning.Effort != "" {
+		switch r.Reasoning.Effort {
+		case EffortNone, EffortLow, EffortHigh, EffortMax, EffortMinimal, EffortMedium, EffortXHigh:
+		default:
+			return deepseek.Invalid("reasoning.effort", "unsupported value %q", r.Reasoning.Effort)
+		}
 	}
 	if err := r.Text.validate(); err != nil {
 		return err
@@ -200,8 +214,12 @@ func (t *Text) validate() error {
 		return nil
 	}
 	f := t.Format
-	if f.Type == "" {
+	switch f.Type {
+	case FormatText, FormatJSONObject, FormatJSONSchema:
+	case "":
 		return deepseek.Invalid("text.format.type", "is required")
+	default:
+		return deepseek.Invalid("text.format.type", "unsupported value %q", f.Type)
 	}
 	if f.Type != FormatJSONSchema {
 		return nil
@@ -358,6 +376,12 @@ func validateToolChoice(tc *ToolChoice) error {
 		return deepseek.Invalid("tool_choice", "must be a mode or a named function, not both")
 	case tc.Mode == "" && tc.Function == "":
 		return deepseek.Invalid("tool_choice", `must be "none", "auto", "required" or a named function`)
+	case tc.Mode != "":
+		switch tc.Mode {
+		case ToolChoiceNone, ToolChoiceAuto, ToolChoiceRequired:
+		default:
+			return deepseek.Invalid("tool_choice", "unsupported mode %q", tc.Mode)
+		}
 	}
 	return nil
 }
@@ -402,8 +426,42 @@ func validateInput(in *Input) error {
 	if in == nil || in.Null {
 		return nil
 	}
+	type callRef struct {
+		field  string
+		kind   ItemType
+		output ItemType
+	}
+	calls := make(map[string]callRef, len(in.Items))
+	outputs := make(map[string]ItemType, len(in.Items))
+	var callOrder []string
 	for i, item := range in.Items {
 		field := fmt.Sprintf("input[%d]", i)
+		switch item.Type {
+		case ItemFunctionCall, ItemFunctionCallOutput, ItemCustomToolCall, ItemCustomToolCallOutput:
+			if item.CallID == "" {
+				return deepseek.Invalid(field+".call_id", "is required for %s items", item.Type)
+			}
+		}
+		switch item.Type {
+		case ItemFunctionCall, ItemCustomToolCall:
+			output := ItemFunctionCallOutput
+			if item.Type == ItemCustomToolCall {
+				output = ItemCustomToolCallOutput
+			}
+			if _, exists := calls[item.CallID]; exists {
+				return deepseek.Invalid(field+".call_id", "duplicate call_id %q", item.CallID)
+			}
+			calls[item.CallID] = callRef{field: field, kind: item.Type, output: output}
+			callOrder = append(callOrder, item.CallID)
+		case ItemFunctionCallOutput, ItemCustomToolCallOutput:
+			if _, exists := outputs[item.CallID]; exists {
+				return deepseek.Invalid(field+".call_id", "duplicate call_id %q", item.CallID)
+			}
+			outputs[item.CallID] = item.Type
+		}
+		if item.Type == ItemCustomToolCall && item.Name != "apply_patch" {
+			return deepseek.Invalid(field+".name", `custom tool calls must name "apply_patch", got %q`, item.Name)
+		}
 		if item.Content != nil {
 			if err := validateContentParts(field+".content", item.Content.Parts); err != nil {
 				return err
@@ -413,6 +471,12 @@ func validateInput(in *Input) error {
 			if err := validateContentParts(field+".output", item.Output.Parts); err != nil {
 				return err
 			}
+		}
+	}
+	for _, id := range callOrder {
+		call := calls[id]
+		if outputs[id] != call.output {
+			return deepseek.Invalid(call.field+".call_id", "%s %q has no matching %s item", call.kind, id, call.output)
 		}
 	}
 	return nil

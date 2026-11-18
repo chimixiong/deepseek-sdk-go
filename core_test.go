@@ -372,9 +372,10 @@ func TestSSESkipsEmptyDataPayload(t *testing.T) {
 }
 
 func TestSSELineEndings(t *testing.T) {
-	// CRLF, a bare CR and a final line without any terminator.
+	// CRLF and a bare CR terminate lines. The final "data: c" has no blank
+	// line, so the spec discards that incomplete event at EOF.
 	stream := deepseek.NewStream(io.NopCloser(strings.NewReader("data: a\r\n\r\ndata: b\r\rdata: c\r")))
-	for _, want := range []string{"a", "b", "c"} {
+	for _, want := range []string{"a", "b"} {
 		event, err := stream.Next()
 		if err != nil {
 			t.Fatalf("Next: %v", err)
@@ -385,6 +386,17 @@ func TestSSELineEndings(t *testing.T) {
 	}
 	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("final err = %v, want EOF", err)
+	}
+}
+
+func TestSSEStripsBOM(t *testing.T) {
+	stream := deepseek.NewStream(io.NopCloser(strings.NewReader("\uFEFFdata: real\n\n")))
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if string(event.Data) != "real" {
+		t.Fatalf("data = %q, want %q", event.Data, "real")
 	}
 }
 
@@ -468,5 +480,59 @@ func TestNegativeRetryBaseDelaySkipsWait(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("elapsed = %v, want no backoff wait", elapsed)
+	}
+}
+
+func TestMarshalWithExtraRejectsModelledField(t *testing.T) {
+	type request struct {
+		Stream *bool `json:"stream,omitempty"`
+	}
+	_, err := deepseek.MarshalWithExtra(request{}, map[string]json.RawMessage{
+		"stream": json.RawMessage(`true`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicates a modelled field") {
+		t.Fatalf("err = %v, want a duplicate-field error", err)
+	}
+}
+
+func TestAuthorizationNotSentToForeignHost(t *testing.T) {
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+
+	client := deepseek.New(deepseek.Config{
+		APIKey:     "secret",
+		BaseURL:    "https://api.example.invalid",
+		HTTPClient: server.Client(),
+	})
+	if err := client.DoJSON(context.Background(), &deepseek.Request{URL: server.URL}, nil); err != nil {
+		t.Fatalf("DoJSON: %v", err)
+	}
+	if authorization != "" {
+		t.Fatalf("Authorization = %q, want it omitted for a foreign host", authorization)
+	}
+}
+
+func TestAPIErrorMarksTruncatedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.CopyN(w, strings.NewReader(strings.Repeat("x", 70<<10)), 70<<10)
+	}))
+	defer server.Close()
+
+	client := deepseek.New(deepseek.Config{BaseURL: server.URL, HTTPClient: server.Client()})
+	err := client.DoJSON(context.Background(), &deepseek.Request{URL: server.URL}, nil)
+	var apiErr *deepseek.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *deepseek.APIError", err)
+	}
+	if !apiErr.Truncated || len(apiErr.Body) != 64<<10 {
+		t.Fatalf("truncated = %v, body = %d bytes", apiErr.Truncated, len(apiErr.Body))
+	}
+	if !strings.Contains(apiErr.Error(), "body truncated") {
+		t.Fatalf("error text = %q", apiErr.Error())
 	}
 }

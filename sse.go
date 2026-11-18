@@ -2,11 +2,16 @@ package deepseek
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// maxSSELine bounds one input line so a hostile stream cannot grow memory
+// without limit.
+const maxSSELine = 1 << 20
 
 // SSEEvent is one dispatched server-sent event.
 type SSEEvent struct {
@@ -24,9 +29,10 @@ type SSEEvent struct {
 
 // Stream reads server-sent events from an HTTP response body.
 type Stream struct {
-	body io.ReadCloser
-	r    *bufio.Reader
-	done bool
+	body       io.ReadCloser
+	r          *bufio.Reader
+	done       bool
+	bomChecked bool
 }
 
 // NewStream wraps body. Call Close when finished. A nil body yields an empty
@@ -50,6 +56,10 @@ func (s *Stream) Next() (SSEEvent, error) {
 	)
 	for {
 		line, err := s.readLine()
+		if !s.bomChecked {
+			line = strings.TrimPrefix(line, "\uFEFF")
+			s.bomChecked = true
+		}
 		if line != "" {
 			if strings.HasPrefix(line, ":") {
 				// Comment, often a keep-alive.
@@ -77,11 +87,9 @@ func (s *Stream) Next() (SSEEvent, error) {
 		}
 		if err != nil {
 			if err == io.EOF {
+				// The SSE spec discards an event that is not terminated by a
+				// blank line.
 				s.done = true
-				if payload := strings.Join(data, "\n"); payload != "" {
-					ev.Data = []byte(payload)
-					return ev, nil
-				}
 				return SSEEvent{}, io.EOF
 			}
 			return SSEEvent{}, err
@@ -122,6 +130,9 @@ func (s *Stream) readLine() (string, error) {
 			}
 			return string(line), nil
 		default:
+			if len(line) >= maxSSELine {
+				return "", fmt.Errorf("deepseek: SSE line exceeds %d bytes", maxSSELine)
+			}
 			line = append(line, b)
 		}
 	}

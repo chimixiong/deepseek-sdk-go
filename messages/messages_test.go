@@ -160,3 +160,42 @@ func TestClientDefaults(t *testing.T) {
 		t.Fatalf("MessagesURL = %q", client.api.MessagesURL())
 	}
 }
+
+func TestCreateReturnsGenerationError(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"The model failed to generate a complete response. Please retry."},"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":3,"service_tier":"standard"}}`)
+	})
+	resp, err := client.Create(context.Background(), validRequest())
+	var generationErr *deepseek.ResponseError
+	if !errors.As(err, &generationErr) {
+		t.Fatalf("err = %v, want *deepseek.ResponseError", err)
+	}
+	if generationErr.Type != "api_error" {
+		t.Fatalf("generation error = %+v", generationErr)
+	}
+	if resp == nil || resp.Usage.OutputTokens != 3 || resp.Type != TypeError {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestCreateStreamRejectsNonSSE(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-9")
+		io.WriteString(w, `{"error":{"type":"api_error","message":"backend exploded"}}`)
+	})
+	var got error
+	for _, err := range client.CreateStream(context.Background(), validRequest()) {
+		if err != nil {
+			got = err
+		}
+	}
+	var apiErr *deepseek.APIError
+	if !errors.As(got, &apiErr) {
+		t.Fatalf("err = %v, want *deepseek.APIError", got)
+	}
+	if apiErr.RequestID != "req-9" || !strings.Contains(apiErr.Message, "backend exploded") {
+		t.Fatalf("api error = %+v", apiErr)
+	}
+}

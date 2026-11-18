@@ -16,8 +16,9 @@ import (
 const (
 	// DefaultBaseURL is the DeepSeek API root.
 	DefaultBaseURL = "https://api.deepseek.com"
-	// Version is reported in the User-Agent header.
-	Version = "0.1.0"
+	// Version is reported in the User-Agent header and matches the released
+	// tag.
+	Version = "0.0.1"
 
 	defaultMaxRetries     = 2
 	defaultRetryBaseDelay = 500 * time.Millisecond
@@ -166,7 +167,7 @@ func (c *Client) FileURL(id string) string {
 
 // ToolURL is the endpoint for a tool, for example "search" or "tts".
 func (c *Client) ToolURL(name string) string {
-	return c.baseURL + "/v1/tools/" + name
+	return c.baseURL + "/v1/tools/" + url.PathEscape(name)
 }
 
 func trimSlash(s string) string { return strings.TrimRight(s, "/") }

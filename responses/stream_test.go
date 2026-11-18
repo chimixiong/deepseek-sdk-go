@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
 	"strconv"
 	"strings"
@@ -339,5 +340,49 @@ func TestCreateStreamValidation(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("yielded %d results, want 1", count)
+	}
+}
+
+func TestAccumulateReturnsFailedResponse(t *testing.T) {
+	failed := `{"id":"resp_1","object":"response","created_at":1,"status":"failed","model":"deepseek-flash","error":{"code":"server_error","message":"generation failed"},"output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`
+	client := streamingClient(t, []sseEvent{
+		eventJSON(string(responses.EventFailed), `"response":`+failed),
+	})
+	resp, err := responses.Accumulate(client.CreateStream(context.Background(), &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+	}))
+	var responseErr *responses.ResponseError
+	if !errors.As(err, &responseErr) {
+		t.Fatalf("err = %v, want *responses.ResponseError", err)
+	}
+	if resp == nil || resp.Usage == nil || resp.Usage.TotalTokens != 3 {
+		t.Fatalf("response = %+v, want the failed response and usage", resp)
+	}
+}
+
+func TestAccumulateNilStream(t *testing.T) {
+	var seq iter.Seq2[responses.Event, error]
+	_, err := responses.Accumulate(seq)
+	var validation *deepseek.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("err = %v, want *deepseek.ValidationError", err)
+	}
+}
+
+func TestAccumulateStopsAtTerminalEvent(t *testing.T) {
+	completed := &responses.Response{ID: "resp_1", Status: responses.StatusCompleted}
+	seq := func(yield func(responses.Event, error) bool) {
+		if !yield(responses.Event{Type: responses.EventCompleted, Response: completed}, nil) {
+			return
+		}
+		yield(responses.Event{}, errors.New("connection reset"))
+	}
+	resp, err := responses.Accumulate(seq)
+	if err != nil {
+		t.Fatalf("Accumulate: %v", err)
+	}
+	if resp != completed {
+		t.Fatalf("response = %+v, want the terminal response", resp)
 	}
 }

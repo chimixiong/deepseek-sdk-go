@@ -1,3 +1,3 @@
 module github.com/chimixiong/deepseek-sdk-go
 
-go 1.27.4
+go 1.27

@@ -186,9 +186,57 @@ func TestSpeakAcceptsContentTypeParameters(t *testing.T) {
 func TestSpeakJSONErrorBody(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"error":{"message":"boom"}}`)
+		w.Header().Set("x-request-id", "req-tts")
+		io.WriteString(w, `{"error":{"message":"text did not pass content review","type":"invalid_request_error","code":"content_filter"}}`)
 	})
-	if _, err := c.Speak(context.Background(), &TTSRequest{Text: "hi"}); err == nil {
-		t.Fatal("Speak accepted a JSON response body as audio")
+	_, err := c.Speak(context.Background(), &TTSRequest{Text: "hi"})
+	apiErr := requireAPIError(t, err, http.StatusOK)
+	if !strings.Contains(apiErr.Message, "content review") || apiErr.RequestID != "req-tts" {
+		t.Fatalf("api error = %+v", apiErr)
 	}
+	if apiErr.Code != "content_filter" {
+		t.Fatalf("code = %q", apiErr.Code)
+	}
+}
+
+func TestSpeakBytesDetectsShortAudio(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/pcm")
+		w.Header().Set("Content-Length", "100")
+		w.Write(make([]byte, 10))
+	})
+	if _, _, err := c.SpeakBytes(context.Background(), &TTSRequest{Text: "hi", Format: TTSFormatPCM}); err == nil {
+		t.Fatal("SpeakBytes accepted a body shorter than Content-Length")
+	}
+}
+
+func TestSpeakBytesValidatesWAVHeader(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		// RIFF header claims 100 bytes; the body ends immediately after WAVE.
+		w.Write([]byte("RIFF\x64\x00\x00\x00WAVE"))
+	})
+	if _, _, err := c.SpeakBytes(context.Background(), &TTSRequest{Text: "hi"}); err == nil {
+		t.Fatal("SpeakBytes accepted a truncated WAV body")
+	}
+}
+
+func TestTTSBilledCharacterLimit(t *testing.T) {
+	c := newTestClient(t, noRequest(t))
+	chinese := strings.Repeat("中", maxTTSBilledChars/2+1)
+	_, err := c.Speak(context.Background(), &TTSRequest{Text: chinese})
+	requireValidationError(t, err, "text")
+
+	ascii := strings.Repeat("a", maxTTSBilledChars+1)
+	_, err = c.Speak(context.Background(), &TTSRequest{Text: ascii})
+	requireValidationError(t, err, "text")
+}
+
+func TestTTSBodyLimit(t *testing.T) {
+	c := newTestClient(t, noRequest(t))
+	_, err := c.Speak(context.Background(), &TTSRequest{
+		Text:  "hi",
+		Extra: map[string]json.RawMessage{"padding": json.RawMessage(`"` + strings.Repeat("x", maxTTSBody) + `"`)},
+	})
+	requireValidationError(t, err, "body")
 }

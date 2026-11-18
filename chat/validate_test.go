@@ -40,6 +40,7 @@ func TestValidate(t *testing.T) {
 		}, "CreateStream"},
 		{"thinking required", func(r *chat.Request) {
 			r.Thinking = &chat.Thinking{Type: chat.ThinkingEnabled}
+			r.Tools = []chat.Tool{chat.FunctionTool("get_weather", "weather", nil)}
 			r.ToolChoice = chat.RequiredToolChoice()
 		}, "thinking mode"},
 		{"prefix on user", func(r *chat.Request) { r.Messages[0].Prefix = new(true) }, "prefix"},
@@ -54,6 +55,26 @@ func TestValidate(t *testing.T) {
 		{"latest_reminder format", func(r *chat.Request) {
 			r.Messages = []chat.Message{chat.LatestReminderMessage("garbage"), chat.UserMessage("hi")}
 		}, "date"},
+		{"empty system", func(r *chat.Request) {
+			r.Messages[0] = chat.SystemMessage("")
+		}, "content"},
+		{"assistant null without tool calls", func(r *chat.Request) {
+			r.Messages = []chat.Message{{Role: chat.RoleAssistant, Content: chat.NullContent()}}
+		}, "tool_calls"},
+		{"empty tool content", func(r *chat.Request) {
+			r.Messages = append(r.Messages, chat.ToolMessage("call_1", chat.TextContent("")))
+		}, "content"},
+		{"latest_reminder tool calls", func(r *chat.Request) {
+			reminder := chat.LatestReminderMessage("2026-11-18, Wednesday, Singapore, Web, English")
+			reminder.ToolCalls = []chat.ToolCall{{ID: "call_1", Type: "function"}}
+			r.Messages = []chat.Message{reminder, chat.UserMessage("hi")}
+		}, "tool_calls"},
+		{"required without tools", func(r *chat.Request) {
+			r.ToolChoice = chat.RequiredToolChoice()
+		}, "at least one tool"},
+		{"undeclared function", func(r *chat.Request) {
+			r.ToolChoice = chat.FunctionToolChoice("nope")
+		}, "not declared"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,6 +91,24 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestStreamOptionsWithPublicValidate(t *testing.T) {
+	req := validRequest()
+	req.Stream = new(true)
+	req.StreamOptions = &chat.StreamOptions{IncludeUsage: new(true)}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestFunctionNamedFunctionCanBeForced(t *testing.T) {
+	req := validRequest()
+	req.Tools = []chat.Tool{chat.FunctionTool("function", "a function named function", nil)}
+	req.ToolChoice = chat.FunctionToolChoice("function")
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }
 
@@ -96,6 +135,7 @@ func TestToolChoiceValidation(t *testing.T) {
 		t.Fatal("expected an error for an empty tool choice")
 	}
 	req.ToolChoice = chat.FunctionToolChoice("get_weather")
+	req.Tools = []chat.Tool{chat.FunctionTool("get_weather", "weather", nil)}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("named choice: %v", err)
 	}
@@ -141,5 +181,59 @@ func TestLatestReminderMustBeLastButOne(t *testing.T) {
 	}
 	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "immediately followed") {
 		t.Fatalf("last reminder err = %v", err)
+	}
+}
+
+func TestValidateToolNamesAndServerToolChoice(t *testing.T) {
+	req := validRequest()
+	req.Tools = []chat.Tool{chat.FunctionTool("bad name", "", nil)}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "function.name") {
+		t.Fatalf("err = %v, want a function name error", err)
+	}
+
+	req = validRequest()
+	req.Tools = []chat.Tool{chat.FunctionTool(strings.Repeat("a", 129), "", nil)}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "function.name") {
+		t.Fatalf("err = %v, want a function name error", err)
+	}
+
+	req = validRequest()
+	req.Tools = []chat.Tool{chat.WebSearchTool()}
+	req.ToolChoice = chat.FunctionToolChoice("deepseek_web_search")
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "cannot be forced") {
+		t.Fatalf("err = %v, want a tool choice error", err)
+	}
+
+	req = validRequest()
+	req.Tools = []chat.Tool{chat.FunctionTool("deepseek_web_search", "", nil)}
+	req.ToolChoice = chat.FunctionToolChoice("deepseek_web_search")
+	if err := req.Validate(); err != nil {
+		t.Fatalf("a same-named client function must be allowed: %v", err)
+	}
+
+	req = validRequest()
+	req.Stop = chat.Stop{strings.Repeat("a", 513)}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "512 bytes") {
+		t.Fatalf("err = %v, want a stop length error", err)
+	}
+
+	req = validRequest()
+	req.ReasoningEffort = chat.EffortXHigh
+	if err := req.Validate(); err != nil {
+		t.Fatalf("alias effort: %v", err)
+	}
+}
+
+func TestValidateDuplicateTools(t *testing.T) {
+	req := validRequest()
+	req.Tools = []chat.Tool{chat.FunctionTool("f", "", nil), chat.FunctionTool("f", "", nil)}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("err = %v, want a duplicate tool error", err)
+	}
+
+	req = validRequest()
+	req.Tools = []chat.Tool{chat.WebSearchTool(), chat.WebSearchTool()}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("err = %v, want a duplicate tool error", err)
 	}
 }

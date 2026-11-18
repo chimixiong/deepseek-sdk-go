@@ -59,7 +59,8 @@ const (
 	ThinkingDisabled ThinkingType = "disabled"
 )
 
-// ReasoningEffort is the thinking intensity.
+// ReasoningEffort is the thinking intensity. The service maps "minimal" to
+// "low" and "medium"/"xhigh" to "high".
 type ReasoningEffort string
 
 const (
@@ -67,6 +68,11 @@ const (
 	EffortLow  ReasoningEffort = "low"
 	EffortHigh ReasoningEffort = "high"
 	EffortMax  ReasoningEffort = "max"
+
+	// EffortMinimal, EffortMedium and EffortXHigh are documented aliases.
+	EffortMinimal ReasoningEffort = "minimal"
+	EffortMedium  ReasoningEffort = "medium"
+	EffortXHigh   ReasoningEffort = "xhigh"
 )
 
 // ResponseFormat selects the output format.

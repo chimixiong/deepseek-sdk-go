@@ -1,6 +1,10 @@
 package chat
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/chimixiong/deepseek-sdk-go"
+)
 
 // FinishReason is why generation stopped.
 type FinishReason string
@@ -23,6 +27,10 @@ type Response struct {
 	SystemFingerprint string   `json:"system_fingerprint"`
 	Choices           []Choice `json:"choices"`
 	Usage             *Usage   `json:"usage,omitempty"`
+	// Error is set when generation fails after a 200 status line. It arrives
+	// with the billed usage and no usable choices; Create returns it as an
+	// error with the response so the usage stays readable.
+	Error *deepseek.ResponseError `json:"error,omitempty"`
 }
 
 // Choice is one completion candidate.

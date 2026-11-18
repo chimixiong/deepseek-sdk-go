@@ -45,6 +45,10 @@ func main() {
 			fmt.Println(block.Text)
 		}
 	}
-	fmt.Printf("stop_reason: %s\n", *response.StopReason)
+	stopReason := ""
+	if response.StopReason != nil {
+		stopReason = string(*response.StopReason)
+	}
+	fmt.Printf("stop_reason: %s\n", stopReason)
 	fmt.Printf("tokens: input=%d output=%d\n", response.Usage.InputTokens, response.Usage.OutputTokens)
 }

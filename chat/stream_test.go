@@ -6,6 +6,7 @@ import (
 	"io"
 	"iter"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/chimixiong/deepseek-sdk-go/chat"
@@ -220,5 +221,107 @@ func TestAccumulateNilStream(t *testing.T) {
 	}
 	if response != nil {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestCreateStreamGenerationError(t *testing.T) {
+	client, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"deepseek-flash","choices":[{"index":0,"delta":{"content":"Hi"}}]}
+
+data: {"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"deepseek-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"error":{"message":"boom","type":"api_error"}}
+
+`)
+	})
+	resp, err := chat.Accumulate(client.CreateStream(context.Background(), &chat.Request{
+		Model:    "deepseek-flash",
+		Messages: []chat.Message{chat.UserMessage("hi")},
+	}))
+	if err == nil {
+		t.Fatal("expected a generation error")
+	}
+	if resp == nil || resp.Error == nil || resp.Usage == nil || resp.Usage.TotalTokens != 4 {
+		t.Fatalf("response = %+v, want the error chunk and its billed usage", resp)
+	}
+}
+
+func TestChunkServerToolEvent(t *testing.T) {
+	var chunk chat.Chunk
+	if err := json.Unmarshal([]byte(`{"id":"c","choices":[{"index":0,"delta":{},"server_tool_event":{"type":"call_started","step":0,"call":{"index":0,"type":"deepseek_web_search"}}}]}`), &chunk); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(chunk.Choices[0].ServerToolEvent) == "" {
+		t.Fatal("server_tool_event was dropped")
+	}
+	var event struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(chunk.Choices[0].ServerToolEvent, &event); err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if event.Type != "call_started" {
+		t.Fatalf("event type = %q", event.Type)
+	}
+}
+
+func TestCreateStreamRequiresDone(t *testing.T) {
+	client, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}\n\n")
+	})
+	var got error
+	for _, err := range client.CreateStream(context.Background(), &chat.Request{
+		Model:    "deepseek-flash",
+		Messages: []chat.Message{chat.UserMessage("hi")},
+	}) {
+		if err != nil {
+			got = err
+		}
+	}
+	if got == nil || !strings.Contains(got.Error(), "before [DONE]") {
+		t.Fatalf("err = %v, want a missing [DONE] error", got)
+	}
+}
+
+func TestStreamAccumulatorMultipleChoices(t *testing.T) {
+	seq := func(yield func(chat.Chunk, error) bool) {
+		chunk := chat.Chunk{ID: "c", Choices: []chat.ChunkChoice{
+			{Index: 1, Delta: chat.Delta{Content: new("world")}},
+			{Index: 0, Delta: chat.Delta{Content: new("hello")}},
+		}}
+		if !yield(chunk, nil) {
+			return
+		}
+		finish := chat.Chunk{Choices: []chat.ChunkChoice{
+			{Index: 0, FinishReason: chat.FinishStop},
+			{Index: 1, FinishReason: chat.FinishLength},
+		}}
+		yield(finish, nil)
+	}
+	resp, err := chat.Accumulate(seq)
+	if err != nil {
+		t.Fatalf("Accumulate: %v", err)
+	}
+	if len(resp.Choices) != 2 {
+		t.Fatalf("choices = %+v", resp.Choices)
+	}
+	if resp.Choices[0].Index != 0 || resp.Choices[0].Message.Content.Text != "hello" ||
+		resp.Choices[0].FinishReason != chat.FinishStop {
+		t.Fatalf("choice 0 = %+v", resp.Choices[0])
+	}
+	if resp.Choices[1].Index != 1 || resp.Choices[1].Message.Content.Text != "world" ||
+		resp.Choices[1].FinishReason != chat.FinishLength {
+		t.Fatalf("choice 1 = %+v", resp.Choices[1])
+	}
+}
+
+func TestStreamAccumulatorCanBeCopied(t *testing.T) {
+	acc := &chat.StreamAccumulator{}
+	copied := *acc
+	// A zero Builder used to panic with "illegal use of non-zero Builder
+	// copied by value"; the accumulator no longer contains one.
+	copied.Add(chat.Chunk{Choices: []chat.ChunkChoice{{Index: 0, Delta: chat.Delta{Content: new("ok")}}}})
+	if got := copied.Response().Choices[0].Message.Content.Text; got != "ok" {
+		t.Fatalf("content = %q", got)
 	}
 }

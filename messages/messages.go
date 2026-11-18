@@ -8,10 +8,14 @@ package messages
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
+	"mime"
 	"net/http"
+	"strings"
 
 	deepseek "github.com/chimixiong/deepseek-sdk-go"
 )
@@ -54,6 +58,9 @@ func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	if err := c.api.DoJSON(ctx, c.httpRequest(req), &out); err != nil {
 		return nil, err
 	}
+	if out.Error != nil {
+		return &out, out.Error
+	}
 	return &out, nil
 }
 
@@ -75,11 +82,20 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Event
 			yield(Event{}, err)
 			return
 		}
-		stream, err := c.api.OpenStream(ctx, c.httpRequest(&body))
+		request := c.httpRequest(&body)
+		request.Header.Set("Accept", "text/event-stream")
+		resp, err := c.api.Do(ctx, request)
 		if err != nil {
 			yield(Event{}, err)
 			return
 		}
+		if !isEventStream(resp.Header.Get("Content-Type")) {
+			defer resp.Body.Close()
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, maxStreamErrorBody))
+			yield(Event{}, streamContentTypeError(resp, data))
+			return
+		}
+		stream := deepseek.NewStream(resp.Body)
 		defer stream.Close()
 		for {
 			raw, err := stream.Next()
@@ -103,6 +119,56 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Event
 			}
 		}
 	}
+}
+
+const maxStreamErrorBody = 64 << 10
+
+func isEventStream(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && mediaType == "text/event-stream"
+}
+
+// streamContentTypeError turns a non-SSE 2xx response into an error that keeps
+// the server's message and request id instead of reporting a bare truncated
+// stream.
+func streamContentTypeError(resp *http.Response, body []byte) error {
+	var wire struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	apiErr := &deepseek.APIError{
+		StatusCode: resp.StatusCode,
+		RequestID: firstNonEmpty(
+			resp.Header.Get("x-request-id"),
+			resp.Header.Get("x-ds-trace-id"),
+			resp.Header.Get("request-id"),
+		),
+		Body: body,
+	}
+	if json.Unmarshal(body, &wire) == nil && wire.Error != nil {
+		apiErr.Message, apiErr.Type, apiErr.Code, apiErr.Param =
+			wire.Error.Message, wire.Error.Type, wire.Error.Code, wire.Error.Param
+	} else {
+		apiErr.Message = strings.TrimSpace(string(body))
+	}
+	if apiErr.Message == "" {
+		apiErr.Message = "response is not text/event-stream"
+	}
+	apiErr.Message = fmt.Sprintf("expected text/event-stream, got %q: %s", resp.Header.Get("Content-Type"), apiErr.Message)
+	return apiErr
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (c *Client) httpRequest(req *Request) *deepseek.Request {

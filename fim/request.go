@@ -2,6 +2,7 @@ package fim
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/chimixiong/deepseek-sdk-go"
 )
@@ -85,6 +86,9 @@ func (r *Request) Validate() error {
 	if r.Model == "" {
 		return deepseek.Invalid("model", "is required")
 	}
+	if strings.TrimSpace(r.Prompt) == "" {
+		return deepseek.Invalid("prompt", "is required")
+	}
 	if r.Echo != nil && *r.Echo {
 		if r.Suffix != nil {
 			return deepseek.Invalid("echo", "cannot be combined with suffix")
@@ -101,6 +105,14 @@ func (r *Request) Validate() error {
 	}
 	if len(r.Stop) > 16 {
 		return deepseek.Invalid("stop", "must contain at most 16 sequences")
+	}
+	for _, sequence := range r.Stop {
+		if sequence == "" {
+			return deepseek.Invalid("stop", "must not contain an empty sequence")
+		}
+		if len(sequence) > 512 {
+			return deepseek.Invalid("stop", "each sequence must not exceed 512 bytes, got %d", len(sequence))
+		}
 	}
 	if r.StreamOptions != nil && (r.Stream == nil || !*r.Stream) {
 		return deepseek.Invalid("stream_options", "requires stream to be true")

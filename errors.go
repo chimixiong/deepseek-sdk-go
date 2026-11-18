@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,8 @@ type APIError struct {
 	RequestID  string
 	// Body is the raw response body, capped at 64 KiB.
 	Body []byte
+	// Truncated reports that Body was larger than the cap.
+	Truncated bool
 }
 
 func (e *APIError) Error() string {
@@ -41,6 +44,9 @@ func (e *APIError) Error() string {
 	if e.RequestID != "" {
 		fmt.Fprintf(&b, " [request_id=%s]", e.RequestID)
 	}
+	if e.Truncated {
+		b.WriteString(" [body truncated]")
+	}
 	return b.String()
 }
 
@@ -48,12 +54,44 @@ func (e *APIError) Error() string {
 // context.
 type TransportError struct{ Err error }
 
+// ResponseError is the error object a 200 response can carry when generation
+// fails after the status line was sent. Chat Completions and Messages return
+// it with the billed usage; OCR returns it without usage.
+type ResponseError struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    string  `json:"code"`
+}
+
+func (e *ResponseError) Error() string {
+	if e == nil {
+		return "deepseek: generation failed"
+	}
+	var b strings.Builder
+	b.WriteString("deepseek: generation failed")
+	if e.Type != "" {
+		b.WriteString(" " + e.Type)
+	}
+	if e.Code != "" && e.Code != e.Type {
+		fmt.Fprintf(&b, " (%s)", e.Code)
+	}
+	if e.Message != "" {
+		b.WriteString(": " + e.Message)
+	}
+	return b.String()
+}
+
 func (e *TransportError) Error() string { return "deepseek: transport: " + e.Err.Error() }
 func (e *TransportError) Unwrap() error { return e.Err }
 
 func readAPIError(resp *http.Response) *APIError {
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
+	truncated := len(body) > maxErrorBody
+	if truncated {
+		body = body[:maxErrorBody]
+	}
 	err := &APIError{
 		StatusCode: resp.StatusCode,
 		RequestID: firstNonEmpty(
@@ -61,7 +99,8 @@ func readAPIError(resp *http.Response) *APIError {
 			resp.Header.Get("x-ds-trace-id"),
 			resp.Header.Get("request-id"),
 		),
-		Body: body,
+		Body:      body,
+		Truncated: truncated,
 	}
 	var wire struct {
 		Error struct {
@@ -79,6 +118,9 @@ func readAPIError(resp *http.Response) *APIError {
 		return err
 	}
 	err.Message = strings.TrimSpace(string(body))
+	if truncated {
+		err.Message += " (body truncated)"
+	}
 	return err
 }
 
@@ -93,7 +135,8 @@ func firstNonEmpty(values ...string) string {
 
 func retryableStatus(code int) bool {
 	switch code {
-	case http.StatusTooManyRequests,
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
 		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
@@ -132,14 +175,24 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 func parseRetryAfter(value string, at time.Time) (time.Duration, bool) {
-	if seconds, err := time.ParseDuration(value + "s"); err == nil {
-		return seconds, true
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		if seconds > int64(maxRetryDelay/time.Second) {
+			return maxRetryDelay, true
+		}
+		return time.Duration(seconds) * time.Second, true
 	}
 	if when, err := http.ParseTime(value); err == nil {
-		if d := when.Sub(at); d > 0 {
-			return d, true
+		d := when.Sub(at)
+		if d <= 0 {
+			return 0, true
 		}
-		return 0, true
+		if d > maxRetryDelay {
+			d = maxRetryDelay
+		}
+		return d, true
 	}
 	return 0, false
 }

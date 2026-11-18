@@ -139,7 +139,7 @@ func (c *Client) do(ctx context.Context, req *Request, stream bool) (*http.Respo
 		if contentType != "" {
 			httpReq.Header.Set("Content-Type", contentType)
 		}
-		if c.apiKey != "" {
+		if c.apiKey != "" && c.trustsURL(target) {
 			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}
 		if c.userAgent != "" {
@@ -164,7 +164,7 @@ func (c *Client) do(ctx context.Context, req *Request, stream bool) (*http.Respo
 		if err != nil {
 			if attempt < c.maxRetries && ctx.Err() == nil && (!wrote || idempotentMethod(method)) {
 				if !sleep(ctx, c.backoff(attempt)) {
-					return nil, ctx.Err()
+					return nil, &TransportError{Err: ctx.Err()}
 				}
 				continue
 			}
@@ -184,7 +184,7 @@ func (c *Client) do(ctx context.Context, req *Request, stream bool) (*http.Respo
 				}
 			}
 			if !sleep(ctx, delay) {
-				return nil, ctx.Err()
+				return nil, &TransportError{Err: ctx.Err()}
 			}
 			continue
 		}
@@ -291,6 +291,25 @@ func escapeQuotes(s string) string {
 		"\r", "%0D",
 		"\n", "%0A",
 	).Replace(s)
+}
+
+// trustsURL reports whether target shares scheme and host with one of the
+// configured API roots, so the API key is never attached to a foreign host.
+func (c *Client) trustsURL(target string) bool {
+	u, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	for _, base := range []string{c.baseURL, c.betaBaseURL, c.anthropicBaseURL} {
+		b, err := url.Parse(base)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(u.Scheme, b.Scheme) && strings.EqualFold(u.Host, b.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 // idempotentMethod reports whether replaying a request whose body already

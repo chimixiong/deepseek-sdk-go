@@ -75,6 +75,7 @@ func TestFetchValidation(t *testing.T) {
 		{"relative", "/docs"},
 		{"ftp", "ftp://example.com/file"},
 		{"missing host", "https:///path"},
+		{"empty hostname with port", "https://:8080/"},
 		{"credentials", "https://user:pass@example.com/"},
 	}
 	for _, tt := range tests {

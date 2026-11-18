@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	deepseek "github.com/chimixiong/deepseek-sdk-go"
 )
@@ -241,6 +242,9 @@ func (r *Request) Validate() error {
 		if stop == "" {
 			return deepseek.Invalid(fmt.Sprintf("stop_sequences[%d]", i), "must not be empty")
 		}
+		if len(stop) > 512 {
+			return deepseek.Invalid(fmt.Sprintf("stop_sequences[%d]", i), "must not exceed 512 bytes, got %d", len(stop))
+		}
 	}
 	if r.Metadata != nil && r.Metadata.UserID != nil && len(*r.Metadata.UserID) > 512 {
 		return deepseek.Invalid("metadata.user_id", "must not exceed 512 bytes, got %d", len(*r.Metadata.UserID))
@@ -254,12 +258,28 @@ func (r *Request) Validate() error {
 		if r.Thinking.Type == "" {
 			return deepseek.Invalid("thinking.type", "is required")
 		}
+		switch r.Thinking.Type {
+		case ThinkingEnabled, ThinkingDisabled, ThinkingAdaptive:
+		default:
+			return deepseek.Invalid("thinking.type", "must be %q, %q or %q, got %q", ThinkingEnabled, ThinkingDisabled, ThinkingAdaptive, r.Thinking.Type)
+		}
 		if r.Thinking.BudgetTokens != nil && *r.Thinking.BudgetTokens < 0 {
 			return deepseek.Invalid("thinking.budget_tokens", "must not be negative, got %d", *r.Thinking.BudgetTokens)
 		}
 	}
-	if r.SafetyCheck != nil && r.SafetyCheck.Level == "" {
-		return deepseek.Invalid("safety_check.level", "is required")
+	if r.OutputConfig != nil {
+		switch r.OutputConfig.Effort {
+		case "", EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortUltra, EffortMax:
+		default:
+			return deepseek.Invalid("output_config.effort", "unsupported value %q", r.OutputConfig.Effort)
+		}
+	}
+	if r.SafetyCheck != nil {
+		switch r.SafetyCheck.Level {
+		case SafetyLow, SafetyHigh:
+		default:
+			return deepseek.Invalid("safety_check.level", "must be %q or %q, got %q", SafetyLow, SafetyHigh, r.SafetyCheck.Level)
+		}
 	}
 	if err := validateTools(r.Tools); err != nil {
 		return err
@@ -329,6 +349,8 @@ func validateTools(tools []Tool) error {
 			if tool.Name != "" && tool.Name != string(ToolDeepSeekReadURL) {
 				return deepseek.Invalid(field+".name", "must be empty or %q", ToolDeepSeekReadURL)
 			}
+		default:
+			return deepseek.Invalid(field+".type", "unsupported value %q", tool.Type)
 		}
 	}
 	return nil
@@ -338,13 +360,19 @@ func validateToolChoice(choice ToolChoice) error {
 	if choice.Null {
 		return nil
 	}
-	if choice.Type == "" {
+	switch choice.Type {
+	case ToolChoiceAuto, ToolChoiceAny, ToolChoiceNone:
+		return nil
+	case ToolChoiceTool:
+		if choice.Name == "" {
+			return deepseek.Invalid("tool_choice.name", "is required when type is \"tool\"")
+		}
+		return nil
+	case "":
 		return deepseek.Invalid("tool_choice.type", "is required")
+	default:
+		return deepseek.Invalid("tool_choice.type", "must be one of %q, %q, %q or %q, got %q", ToolChoiceAuto, ToolChoiceAny, ToolChoiceTool, ToolChoiceNone, choice.Type)
 	}
-	if choice.Type == ToolChoiceTool && choice.Name == "" {
-		return deepseek.Invalid("tool_choice.name", "is required when type is \"tool\"")
-	}
-	return nil
 }
 
 func validateMessages(messages []Message) error {
@@ -364,6 +392,12 @@ func validateMessages(messages []Message) error {
 		if message.Role == RoleLatestReminder {
 			if message.Content.Blocks != nil {
 				return deepseek.Invalid(field+".content", "latest_reminder content must be a string")
+			}
+			if strings.TrimSpace(message.Content.Text) == "" {
+				return deepseek.Invalid(field+".content", "must be a non-empty <date>,<weekday>,<location>,<platform>,<language> string")
+			}
+			if err := validateReminderContent(field+".content", message.Content.Text); err != nil {
+				return err
 			}
 			if i+1 >= len(messages) || messages[i+1].Role != RoleUser {
 				return deepseek.Invalid(field+".role", "latest_reminder must be immediately followed by a user message")
@@ -385,6 +419,19 @@ func validateMessages(messages []Message) error {
 		}
 	}
 	return validateToolPairs(messages)
+}
+
+func validateReminderContent(field, content string) error {
+	fields := strings.Split(content, ",")
+	if len(fields) != 5 {
+		return deepseek.Invalid(field, "must be <date>,<weekday>,<location>,<platform>,<language>")
+	}
+	for _, value := range fields {
+		if strings.TrimSpace(value) == "" {
+			return deepseek.Invalid(field, "must be <date>,<weekday>,<location>,<platform>,<language>")
+		}
+	}
+	return nil
 }
 
 func validateBlock(field string, block Block) error {
@@ -544,8 +591,11 @@ func validateToolPairs(messages []Message) error {
 			continue
 		}
 		uses := toolUseIDs(message.Content)
-		if len(uses) == 0 || i+1 >= len(messages) {
+		if len(uses) == 0 {
 			continue
+		}
+		if i+1 >= len(messages) {
+			return deepseek.Invalid(fmt.Sprintf("messages[%d].content", i), "assistant tool_use blocks must be followed by a user message with tool_result blocks")
 		}
 		if messages[i+1].Role != RoleUser {
 			return deepseek.Invalid(fmt.Sprintf("messages[%d].content", i), "assistant tool_use blocks must be followed by a user message with tool_result blocks")

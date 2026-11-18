@@ -665,6 +665,7 @@ func TestRequestValidation(t *testing.T) {
 		{name: "temperature", req: valid(func(r *responses.Request) { r.Temperature = new(2.5) }), field: "temperature"},
 		{name: "top_p", req: valid(func(r *responses.Request) { r.TopP = new(1.5) }), field: "top_p"},
 		{name: "top_logprobs", req: valid(func(r *responses.Request) { r.TopLogprobs = new(21) }), field: "top_logprobs"},
+		{name: "user too long", req: valid(func(r *responses.Request) { r.User = new(strings.Repeat("a", 513)) }), field: "user"},
 		{name: "empty tool choice", req: valid(func(r *responses.Request) { r.ToolChoice = &responses.ToolChoice{} }), field: "tool_choice"},
 		{name: "mixed tool choice", req: valid(func(r *responses.Request) {
 			r.ToolChoice = &responses.ToolChoice{Mode: responses.ToolChoiceAuto, Function: "f"}
@@ -699,6 +700,18 @@ func TestRequestValidation(t *testing.T) {
 		{name: "safety without level", req: valid(func(r *responses.Request) {
 			r.SafetyCheck = &responses.SafetyCheck{}
 		}), field: "safety_check.level"},
+		{name: "safety unknown level", req: valid(func(r *responses.Request) {
+			r.SafetyCheck = &responses.SafetyCheck{Level: "extreme"}
+		}), field: "safety_check.level"},
+		{name: "unknown effort", req: valid(func(r *responses.Request) {
+			r.Reasoning = &responses.Reasoning{Effort: "banana"}
+		}), field: "reasoning.effort"},
+		{name: "unknown format", req: valid(func(r *responses.Request) {
+			r.Text = &responses.Text{Format: &responses.TextFormat{Type: "yaml"}}
+		}), field: "text.format.type"},
+		{name: "unknown tool choice mode", req: valid(func(r *responses.Request) {
+			r.ToolChoice = &responses.ToolChoice{Mode: "sometimes"}
+		}), field: "tool_choice"},
 		{name: "image both sources", req: valid(func(r *responses.Request) { r.Input = imageBoth }), field: "input[0].content"},
 		{name: "image no source", req: valid(func(r *responses.Request) { r.Input = imageNeither }), field: "input[0].content"},
 		{name: "file without id", req: valid(func(r *responses.Request) { r.Input = emptyFile }), field: "input[0].content"},
@@ -882,5 +895,126 @@ func TestResponseFailed(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != "server_error" || resp.Error.Message != "boom" {
 		t.Errorf("error = %+v", resp.Error)
+	}
+}
+
+func TestInputItemValidation(t *testing.T) {
+	cases := []struct {
+		name  string
+		item  responses.InputItem
+		field string
+	}{
+		{name: "function call without call id", item: responses.InputItem{Type: responses.ItemFunctionCall, Name: "f"}, field: "input[0].call_id"},
+		{name: "function output without call id", item: responses.InputItem{Type: responses.ItemFunctionCallOutput}, field: "input[0].call_id"},
+		{name: "custom tool call without call id", item: responses.InputItem{Type: responses.ItemCustomToolCall, Name: "apply_patch"}, field: "input[0].call_id"},
+		{name: "custom tool call wrong name", item: responses.InputItem{Type: responses.ItemCustomToolCall, CallID: "c", Name: "other"}, field: "input[0].name"},
+		{name: "function call without output", item: responses.InputItem{Type: responses.ItemFunctionCall, CallID: "c", Name: "f"}, field: "input[0].call_id"},
+		{name: "custom tool call without output", item: responses.InputItem{Type: responses.ItemCustomToolCall, CallID: "c", Name: "apply_patch"}, field: "input[0].call_id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &responses.Request{Model: "deepseek-flash", Input: responses.ItemsInput(tc.item)}
+			err := req.Validate()
+			var verr *deepseek.ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("error = %v, want *deepseek.ValidationError", err)
+			}
+			if !strings.HasPrefix(verr.Field, tc.field) {
+				t.Fatalf("field = %q, want prefix %q", verr.Field, tc.field)
+			}
+		})
+	}
+}
+
+func TestInputItemCallPairing(t *testing.T) {
+	req := &responses.Request{Model: "deepseek-flash", Input: responses.ItemsInput(
+		responses.InputItem{Type: responses.ItemFunctionCall, CallID: "fc", Name: "f"},
+		responses.InputItem{Type: responses.ItemFunctionCallOutput, CallID: "fc", Output: new(responses.TextContent("ok"))},
+		responses.InputItem{Type: responses.ItemCustomToolCall, CallID: "cc", Name: "apply_patch"},
+		responses.InputItem{Type: responses.ItemCustomToolCallOutput, CallID: "cc", Output: new(responses.TextContent("ok"))},
+	)}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("valid pairs: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		input *responses.Input
+		field string
+	}{
+		{name: "duplicate call id", input: responses.ItemsInput(
+			responses.InputItem{Type: responses.ItemFunctionCall, CallID: "dup", Name: "f"},
+			responses.InputItem{Type: responses.ItemFunctionCall, CallID: "dup", Name: "g"},
+		), field: "input[1].call_id"},
+		{name: "wrong output kind", input: responses.ItemsInput(
+			responses.InputItem{Type: responses.ItemFunctionCall, CallID: "x", Name: "f"},
+			responses.InputItem{Type: responses.ItemCustomToolCallOutput, CallID: "x", Output: new(responses.TextContent("ok"))},
+		), field: "input[0].call_id"},
+		{name: "duplicate output", input: responses.ItemsInput(
+			responses.InputItem{Type: responses.ItemFunctionCall, CallID: "x", Name: "f"},
+			responses.InputItem{Type: responses.ItemFunctionCallOutput, CallID: "x", Output: new(responses.TextContent("ok"))},
+			responses.InputItem{Type: responses.ItemFunctionCallOutput, CallID: "x", Output: new(responses.TextContent("again"))},
+		), field: "input[2].call_id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &responses.Request{Model: "deepseek-flash", Input: tc.input}
+			err := req.Validate()
+			var verr *deepseek.ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("error = %v, want *deepseek.ValidationError", err)
+			}
+			if !strings.HasPrefix(verr.Field, tc.field) {
+				t.Fatalf("field = %q, want prefix %q", verr.Field, tc.field)
+			}
+		})
+	}
+}
+
+func TestUserAcceptsNonRecommendedCharacters(t *testing.T) {
+	req := &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+		User:  new("user@example.com"),
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestCreateReturnsFailedResponse(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{
+			"id":"resp_1","object":"response","created_at":1,"status":"failed","model":"deepseek-flash",
+			"error":{"code":"server_error","message":"generation failed"},
+			"output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}
+		}`)
+	})
+	resp, err := client.Create(context.Background(), &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+	})
+	var responseErr *responses.ResponseError
+	if !errors.As(err, &responseErr) {
+		t.Fatalf("err = %v, want *responses.ResponseError", err)
+	}
+	if responseErr.Code != "server_error" || !strings.Contains(responseErr.Message, "generation failed") {
+		t.Fatalf("response error = %+v", responseErr)
+	}
+	if resp == nil || resp.Usage == nil || resp.Usage.TotalTokens != 3 {
+		t.Fatalf("response = %+v, want billed usage", resp)
+	}
+}
+
+func TestCreateRejectsEmptyResponse(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	resp, err := client.Create(context.Background(), &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("resp = %+v, err = %v, want an empty response error", resp, err)
 	}
 }

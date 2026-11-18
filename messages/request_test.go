@@ -284,6 +284,12 @@ func TestValidation(t *testing.T) {
 			r.Thinking = &Thinking{Type: ThinkingEnabled, BudgetTokens: new(-1)}
 		}},
 		{"safety without level", "safety_check.level", func(r *Request) { r.SafetyCheck = &SafetyCheck{} }},
+		{"safety unknown level", "safety_check.level", func(r *Request) {
+			r.SafetyCheck = &SafetyCheck{Level: "medium"}
+		}},
+		{"unknown tool type", "tools[0].type", func(r *Request) {
+			r.Tools = []Tool{{Type: "mystery_tool", Name: "x"}}
+		}},
 		{"system non text", "system[0].type", func(r *Request) {
 			r.System = &Content{Blocks: []Block{{Type: BlockImage, Source: &Source{Type: SourceURL, URL: "https://example.com/a.png"}}}}
 		}},
@@ -325,6 +331,15 @@ func TestValidation(t *testing.T) {
 		}},
 		{"invalid role", "messages[0].role", func(r *Request) {
 			r.Messages = []Message{{Role: "system", Content: Content{Text: "x"}}}
+		}},
+		{"latest reminder bad content", "messages[0].content", func(r *Request) {
+			r.Messages = []Message{
+				{Role: RoleLatestReminder, Content: Content{Text: "2026-11-18,Wednesday"}},
+				{Role: RoleUser, Content: Content{Text: "hi"}},
+			}
+		}},
+		{"trailing tool use", "messages[0].content", func(r *Request) {
+			r.Messages = []Message{{Role: RoleAssistant, Content: Content{Blocks: []Block{toolUse("toolu_1")}}}}
 		}},
 		{"image without source", "messages[0].content[0].source", func(r *Request) {
 			r.Messages = userBlocks(Block{Type: BlockImage})

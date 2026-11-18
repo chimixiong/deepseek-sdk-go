@@ -2,6 +2,8 @@ package responses
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/chimixiong/deepseek-sdk-go"
@@ -34,6 +36,40 @@ type IncompleteDetails struct {
 type ResponseError struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// Error implements error. A failed response returns this value, so callers can
+// use errors.As like they do for APIError and ResponseError from other
+// protocols.
+func (e *ResponseError) Error() string {
+	if e == nil {
+		return "deepseek/responses: response failed"
+	}
+	if e.Code != "" && e.Message != "" {
+		return fmt.Sprintf("deepseek/responses: response failed (%s): %s", e.Code, e.Message)
+	}
+	if e.Message != "" {
+		return "deepseek/responses: response failed: " + e.Message
+	}
+	if e.Code != "" {
+		return "deepseek/responses: response failed (" + e.Code + ")"
+	}
+	return "deepseek/responses: response failed"
+}
+
+// failureError reports a failed generation carried by an otherwise successful
+// HTTP response.
+func (r *Response) failureError() error {
+	if r == nil {
+		return nil
+	}
+	if r.Error != nil {
+		return r.Error
+	}
+	if r.Status == StatusFailed {
+		return errors.New("deepseek/responses: response status is failed")
+	}
+	return nil
 }
 
 // Response is a Responses API response object. The service is stateless and

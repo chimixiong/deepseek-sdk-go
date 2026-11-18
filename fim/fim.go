@@ -35,6 +35,12 @@ func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
+	if req.Stream != nil && *req.Stream {
+		return nil, deepseek.Invalid("stream", "must be false; use CreateStream for streaming")
+	}
+	if req.StreamOptions != nil {
+		return nil, deepseek.Invalid("stream_options", "requires CreateStream")
+	}
 	body := *req
 	body.Stream = nil
 	body.StreamOptions = nil

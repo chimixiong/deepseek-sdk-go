@@ -187,6 +187,7 @@ func TestCreateValidation(t *testing.T) {
 		{name: "nil", req: nil},
 		{name: "missing purpose", req: &CreateRequest{File: []byte("x"), Filename: "x"}},
 		{name: "missing filename", req: &CreateRequest{Purpose: PurposeUserData, File: []byte("x")}},
+		{name: "unknown purpose", req: &CreateRequest{Purpose: "vision", Filename: "x", File: []byte("x")}},
 		{name: "empty content", req: &CreateRequest{Purpose: PurposeUserData, Filename: "x"}},
 		{name: "bad anchor", req: &CreateRequest{Purpose: PurposeUserData, Filename: "x", File: []byte("x"), ExpiresAfter: &ExpiresAfter{Anchor: "now", Seconds: 3600}}},
 		{name: "seconds too low", req: &CreateRequest{Purpose: PurposeUserData, Filename: "x", File: []byte("x"), ExpiresAfter: &ExpiresAfter{Seconds: 3599}}},
@@ -321,5 +322,52 @@ func TestDelete(t *testing.T) {
 func TestNewNilClient(t *testing.T) {
 	if client := New(nil); client == nil || client.api == nil {
 		t.Fatal("New(nil) did not install a default transport client")
+	}
+}
+
+func TestFileSizeLimit(t *testing.T) {
+	tests := []struct {
+		contentType string
+		filename    string
+		want        int
+	}{
+		{"image/png", "a.png", maxImageFileBytes},
+		{"application/pdf", "a.pdf", maxDocumentFileBytes},
+		{"", "deck.pptx", maxDocumentFileBytes},
+		{"text/plain", "a.txt", maxTextFileBytes},
+		{"", "book.epub", maxTextFileBytes},
+		{"application/octet-stream", "unknown.bin", maxDocumentFileBytes},
+	}
+	for _, tc := range tests {
+		if got := fileSizeLimit(tc.contentType, tc.filename); got != tc.want {
+			t.Errorf("fileSizeLimit(%q, %q) = %d, want %d", tc.contentType, tc.filename, got, tc.want)
+		}
+	}
+}
+
+func TestCreateRequestLimits(t *testing.T) {
+	longName := strings.Repeat("a", maxFilenameBytes+1) + ".txt"
+	req := &CreateRequest{Purpose: PurposeUserData, Filename: longName, File: []byte("x")}
+	requireField(t, req.Validate(), "file")
+
+	req = &CreateRequest{
+		Purpose:  PurposeUserData,
+		Filename: "a.txt",
+		File:     make([]byte, maxTextFileBytes+1),
+	}
+	requireField(t, req.Validate(), "file")
+
+	req = &CreateRequest{Purpose: PurposeUserData, Filename: "a.png", File: make([]byte, maxImageFileBytes+1)}
+	requireField(t, req.Validate(), "file")
+}
+
+func requireField(t *testing.T, err error, field string) {
+	t.Helper()
+	var validation *deepseek.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %v, want *deepseek.ValidationError", err)
+	}
+	if validation.Field != field {
+		t.Fatalf("field = %q, want %q", validation.Field, field)
 	}
 }

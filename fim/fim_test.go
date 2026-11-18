@@ -117,7 +117,9 @@ func TestCreateValidation(t *testing.T) {
 	}{
 		{name: "nil", req: nil},
 		{name: "missing model", req: &Request{Prompt: "x"}},
-		{name: "echo with suffix", req: &Request{Model: "m", Echo: new(true), Suffix: new("s")}},
+		{name: "missing prompt", req: &Request{Model: "m"}},
+		{name: "stream true", req: &Request{Model: "m", Prompt: "x", Stream: new(true)}},
+		{name: "echo with suffix", req: &Request{Model: "m", Prompt: "x", Echo: new(true), Suffix: new("s")}},
 		{name: "echo with logprobs", req: &Request{Model: "m", Echo: new(true), Logprobs: new(2)}},
 		{name: "logprobs too high", req: &Request{Model: "m", Logprobs: new(21)}},
 		{name: "stream options without stream", req: &Request{Model: "m", StreamOptions: &StreamOptions{}}},

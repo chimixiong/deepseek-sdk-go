@@ -29,7 +29,8 @@ core := deepseek.New(deepseek.Config{
 })
 ```
 
-传输层对 429/5xx 和网络错误做指数退避重试，遵守 `Retry-After`，同时解析
+传输层对 408、429、500、502、503、504 和网络错误做指数退避重试，遵守
+`Retry-After`，同时解析
 OpenAI 与 Anthropic 两种错误体为 `*deepseek.APIError`，并从 `x-request-id`
 或 `x-ds-trace-id` 提取请求 ID。
 
@@ -80,7 +81,7 @@ for chunk, err := range client.CreateStream(ctx, request) {
 ```
 
 `chat.Accumulate` 可以把整个流聚合成一个 `*chat.Response`，工具参数的增量会按
-`index` 拼接。
+`index` 拼接；出错时会同时返回已聚合的部分响应，失败生成的用量仍可读取。
 
 思考模式：
 
@@ -133,14 +134,30 @@ if err == nil {
 文件名，按文档要求的顺序编码 multipart；`Speak` 返回未读取的响应体，可以在音频
 生成过程中直接拷贝或播放。
 
+multipart 请求会在内存中编码一次，以便重试时原样重放，因此一次请求大致持有两份
+载荷：调用方传入的 `[]byte` 与编码后的请求体。`Validate` 会按文档上限拦截：
+ASR 8 MiB、OCR 100 MiB，Files 的图片/文档/文本表格电子书分别为 64/100/32 MiB。
+
 ## 语义约定
 
 - 可选标量使用指针，区分“未传”和零值。
 - `Request.Validate` 在发起网络请求前检查文档中的结构约束，返回
   `*deepseek.ValidationError`。
-- 请求支持 `Extra`，响应中的开放对象保留为 `json.RawMessage`，DeepSeek 新增字段
-  不需要等 SDK 发版。
+- 请求支持 `Extra` 透传 SDK 未建模的字段，响应中的开放对象保留为
+  `json.RawMessage`，DeepSeek 新增字段不需要等 SDK 发版。`Extra` 中的键如果与
+  已建模字段同名会被拒绝，避免静默覆盖。
 - 流式错误由迭代器返回；重试只发生在流或音频的第一个字节之前。
+- 状态行之后才失败的生成仍返回 HTTP 200。Chat Completions 与 Messages
+  按已产生的 token 计费，错误体中带 `usage`；`chat.Create` 与
+  `messages.Create` 识别该 `error` 对象，返回 `*deepseek.ResponseError`，
+  同时把解析后的响应交回调用方，便于读取 `usage`。流式调用由迭代器报告
+  错误（Chat Completions 设在 `Chunk.Error`，Messages 发送 `error` 事件并
+  携带计费用量）；`chat.Accumulate` 也会返回部分响应。
+- `tools.OCR` 识别 200 响应体中的 `error`，返回 `*deepseek.ResponseError`
+  并交回解析后的响应。OCR 错误体不带 `usage`，识别失败或超时不计费。
+- `chat.ChunkChoice.ServerToolEvent` 原样暴露联网工具的流式进度事件
+  （`step_reasoning_done`、`call_started`、`call_completed`）；完整的
+  `server_tool_calls` 与 `annotations` 在最后一个 chunk 中下发。
 
 ## 跨协议转换
 
@@ -174,6 +191,7 @@ item id 原样回传，因此跨协议转换会丢弃推理内容并返回 `Warn
 | `go run ./examples/messages` | `POST /anthropic/v1/messages`，含 thinking signature |
 | `go run ./examples/messages_stream` | Messages 事件流 |
 | `go run ./examples/fim` | `POST /beta/completions` |
+| `go run ./examples/fim_stream` | FIM 补全流 |
 | `go run ./examples/models` | `GET /models` |
 | `go run ./examples/balance` | `GET /user/balance` |
 | `go run ./examples/files` | 文件上传、列表、查询与删除 |
