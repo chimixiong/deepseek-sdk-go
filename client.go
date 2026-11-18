@@ -18,7 +18,7 @@ const (
 	DefaultBaseURL = "https://api.deepseek.com"
 	// Version is reported in the User-Agent header and matches the released
 	// tag.
-	Version = "0.0.2"
+	Version = "0.0.3"
 
 	defaultMaxRetries     = 2
 	defaultRetryBaseDelay = 500 * time.Millisecond

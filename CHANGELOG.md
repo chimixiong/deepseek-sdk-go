@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.3
+
+- Report `Version = 0.0.3` so the released tag passes the CI tag check. No
+  functional changes.
+
 ## 0.0.2
 
 - Surface in-band generation failures and truncated streams.
