@@ -165,3 +165,122 @@ func TestFromResponseKeepsOutputSystemAndInstructions(t *testing.T) {
 		}
 	}
 }
+
+func TestToChatEmptyToolResultValidates(t *testing.T) {
+	transcript := history.Transcript{Turns: []history.Turn{
+		{Role: history.RoleAssistant, Parts: []history.Part{
+			history.Call("call_1", "read_document", json.RawMessage(`{}`)),
+		}},
+		{Role: history.RoleUser, Parts: []history.Part{history.Result("call_1")}},
+	}}
+	messages, warnings := history.ToChat(transcript, history.Options{})
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	if messages[1].Content.Text != "" || messages[1].Content.Parts != nil {
+		t.Fatalf("tool content = %+v, want an empty string", messages[1].Content)
+	}
+	if err := (&chat.Request{Model: "deepseek-flash", Messages: messages}).Validate(); err != nil {
+		t.Fatalf("ToChat output does not validate: %v", err)
+	}
+}
+
+func TestToChatDropsEmptyFile(t *testing.T) {
+	transcript := history.Transcript{Turns: []history.Turn{{
+		Role:  history.RoleUser,
+		Parts: []history.Part{history.Text("hi"), history.FilePart(history.File{})},
+	}}}
+	messages, warnings := history.ToChat(transcript, history.Options{})
+	found := false
+	for _, warning := range warnings {
+		if warning.Field == "file" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want a file warning", warnings)
+	}
+	if len(messages[0].Content.Parts) != 0 {
+		t.Fatalf("parts = %+v, want the empty file dropped", messages[0].Content.Parts)
+	}
+}
+
+func TestToChatNormalizesInvalidArguments(t *testing.T) {
+	transcript := history.Transcript{Turns: []history.Turn{
+		{Role: history.RoleAssistant, Parts: []history.Part{history.Call("call_1", "f", nil)}},
+		{Role: history.RoleUser, Parts: []history.Part{history.Result("call_1", history.Text("ok"))}},
+	}}
+	messages, warnings := history.ToChat(transcript, history.Options{})
+	if got := messages[0].ToolCalls[0].Function.Arguments; got != "{}" {
+		t.Fatalf("arguments = %q, want {}", got)
+	}
+	found := false
+	for _, warning := range warnings {
+		if warning.Field == "tool_call.arguments" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want an arguments warning", warnings)
+	}
+	if err := (&chat.Request{Model: "deepseek-flash", Messages: messages}).Validate(); err != nil {
+		t.Fatalf("ToChat output does not validate: %v", err)
+	}
+}
+
+func TestToMessagesDropsEmptyText(t *testing.T) {
+	transcript := history.Transcript{Turns: []history.Turn{{
+		Role:  history.RoleAssistant,
+		Parts: []history.Part{history.Text("")},
+	}}}
+	_, messages, warnings := history.ToMessages(transcript, history.Options{})
+	if len(messages) != 0 {
+		t.Fatalf("messages = %+v, want the empty turn dropped", messages)
+	}
+	found := false
+	for _, warning := range warnings {
+		if warning.Field == "text" || warning.Field == "assistant" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want an empty text warning", warnings)
+	}
+}
+
+func TestInlineImageMediaTypeIsDetected(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00")
+	transcript := history.Transcript{Turns: []history.Turn{{
+		Role:  history.RoleUser,
+		Parts: []history.Part{history.ImagePart(history.Image{Data: png})},
+	}}}
+	_, messages, _ := history.ToMessages(transcript, history.Options{})
+	source := messages[0].Content.Blocks[0].Source
+	if source.MediaType != "image/png" {
+		t.Fatalf("messages media type = %q, want image/png", source.MediaType)
+	}
+	chatMessages, _ := history.ToChat(transcript, history.Options{})
+	if got := chatMessages[0].Content.Parts[0].ImageURL.URL; !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("chat data URL = %q, want image/png", got)
+	}
+}
+
+func TestUnknownInlineImageMediaTypeIsDropped(t *testing.T) {
+	transcript := history.Transcript{Turns: []history.Turn{{
+		Role:  history.RoleUser,
+		Parts: []history.Part{history.ImagePart(history.Image{Data: []byte("not an image")})},
+	}}}
+	_, messages, warnings := history.ToMessages(transcript, history.Options{})
+	if len(messages) != 0 {
+		t.Fatalf("messages = %+v, want the image dropped", messages)
+	}
+	found := false
+	for _, warning := range warnings {
+		if warning.Field == "image" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want an image warning", warnings)
+	}
+}

@@ -4,6 +4,7 @@ package files
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,6 +35,10 @@ func (c *Client) Create(ctx context.Context, req *CreateRequest) (*File, error) 
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	parts := []deepseek.MultipartPart{
 		{Field: "purpose", Value: []byte(string(req.Purpose))},
 		{
@@ -54,8 +59,8 @@ func (c *Client) Create(ctx context.Context, req *CreateRequest) (*File, error) 
 		)
 	}
 	var file File
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
-		URL:       c.api.FilesURL(),
+	if err := client.DoJSON(ctx, &deepseek.Request{
+		URL:       client.FilesURL(),
 		Multipart: parts,
 	}, &file); err != nil {
 		return nil, err
@@ -66,6 +71,10 @@ func (c *Client) Create(ctx context.Context, req *CreateRequest) (*File, error) 
 // List returns one page of files. A nil options value lists with server
 // defaults.
 func (c *Client) List(ctx context.Context, options *ListOptions) (*ListResponse, error) {
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	query := url.Values{}
 	if options != nil {
 		if err := options.validate(); err != nil {
@@ -85,9 +94,9 @@ func (c *Client) List(ctx context.Context, options *ListOptions) (*ListResponse,
 		}
 	}
 	var list ListResponse
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
+	if err := client.DoJSON(ctx, &deepseek.Request{
 		Method: http.MethodGet,
-		URL:    c.api.FilesURL(),
+		URL:    client.FilesURL(),
 		Query:  query,
 	}, &list); err != nil {
 		return nil, err
@@ -100,10 +109,14 @@ func (c *Client) Retrieve(ctx context.Context, id string) (*File, error) {
 	if id == "" {
 		return nil, deepseek.Invalid("file_id", "is required")
 	}
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	var file File
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
+	if err := client.DoJSON(ctx, &deepseek.Request{
 		Method: http.MethodGet,
-		URL:    c.api.FileURL(id),
+		URL:    client.FileURL(id),
 	}, &file); err != nil {
 		return nil, err
 	}
@@ -115,12 +128,23 @@ func (c *Client) Delete(ctx context.Context, id string) (*DeleteResponse, error)
 	if id == "" {
 		return nil, deepseek.Invalid("file_id", "is required")
 	}
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	var deleted DeleteResponse
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
+	if err := client.DoJSON(ctx, &deepseek.Request{
 		Method: http.MethodDelete,
-		URL:    c.api.FileURL(id),
+		URL:    client.FileURL(id),
 	}, &deleted); err != nil {
 		return nil, err
 	}
 	return &deleted, nil
+}
+
+func (c *Client) transport() (*deepseek.Client, error) {
+	if c == nil || c.api == nil {
+		return nil, errors.New("files: nil deepseek client")
+	}
+	return c.api, nil
 }

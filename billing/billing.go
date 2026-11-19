@@ -3,6 +3,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/chimixiong/deepseek-sdk-go"
@@ -24,12 +25,23 @@ func New(c *deepseek.Client) *Client {
 
 // GetBalance returns the account balance and availability.
 func (c *Client) GetBalance(ctx context.Context) (*Balance, error) {
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	var balance Balance
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
+	if err := client.DoJSON(ctx, &deepseek.Request{
 		Method: http.MethodGet,
-		URL:    c.api.BalanceURL(),
+		URL:    client.BalanceURL(),
 	}, &balance); err != nil {
 		return nil, err
 	}
 	return &balance, nil
+}
+
+func (c *Client) transport() (*deepseek.Client, error) {
+	if c == nil || c.api == nil {
+		return nil, errors.New("billing: nil deepseek client")
+	}
+	return c.api, nil
 }

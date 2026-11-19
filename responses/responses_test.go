@@ -272,7 +272,6 @@ func TestCreateDocShapedRequest(t *testing.T) {
 		Instructions:    new("Be concise."),
 		Reasoning:       &responses.Reasoning{Effort: responses.EffortHigh},
 		MaxOutputTokens: new(1024),
-		Stream:          new(true),
 		Temperature:     new(0.2),
 		TopP:            new(0.9),
 		Text: &responses.Text{
@@ -1016,5 +1015,19 @@ func TestCreateRejectsEmptyResponse(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "empty response") {
 		t.Fatalf("resp = %+v, err = %v, want an empty response error", resp, err)
+	}
+}
+
+func TestCreateRejectsStream(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request must not be sent")
+	})
+	_, err := client.Create(context.Background(), &responses.Request{
+		Model:  "deepseek-flash",
+		Input:  responses.StringInput("hi"),
+		Stream: new(true),
+	})
+	if err == nil || !strings.Contains(err.Error(), "CreateStream") {
+		t.Fatalf("err = %v, want a stream validation error", err)
 	}
 }

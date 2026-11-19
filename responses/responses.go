@@ -34,14 +34,21 @@ func New(c *deepseek.Client) *Client {
 	return &Client{core: c, url: c.ResponsesURL()}
 }
 
-// Create sends a non-streaming request. Stream is forced to false, overriding
-// any value in req.
+// Create sends a non-streaming request. A request with stream enabled is
+// rejected; use CreateStream.
 func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
+	if req.Stream != nil && *req.Stream {
+		return nil, deepseek.Invalid("stream", "must be false; use CreateStream for streaming")
+	}
+	core, url, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	var resp Response
-	if err := c.core.DoJSON(ctx, &deepseek.Request{URL: c.url, JSON: req.prepared(false)}, &resp); err != nil {
+	if err := core.DoJSON(ctx, &deepseek.Request{URL: url, JSON: req.prepared(false)}, &resp); err != nil {
 		return nil, err
 	}
 	if err := resp.failureError(); err != nil {
@@ -62,16 +69,25 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Event
 			yield(Event{}, err)
 			return
 		}
-		stream, err := c.core.OpenStream(ctx, &deepseek.Request{URL: c.url, JSON: req.prepared(true)})
+		core, url, err := c.transport()
+		if err != nil {
+			yield(Event{}, err)
+			return
+		}
+		stream, err := core.OpenStream(ctx, &deepseek.Request{URL: url, JSON: req.prepared(true)})
 		if err != nil {
 			yield(Event{}, err)
 			return
 		}
 		defer stream.Close()
+		terminal := false
 		for {
 			sse, err := stream.Next()
 			if err != nil {
 				if err == io.EOF {
+					if !terminal {
+						yield(Event{}, errors.New("deepseek/responses: stream ended without a terminal response event"))
+					}
 					return
 				}
 				yield(Event{}, err)
@@ -81,6 +97,9 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Event
 				continue
 			}
 			if string(sse.Data) == "[DONE]" {
+				if !terminal {
+					yield(Event{}, errors.New("deepseek/responses: stream ended without a terminal response event"))
+				}
 				return
 			}
 			var event Event
@@ -91,11 +110,19 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Event
 			if sse.Event != "" {
 				event.Type = EventType(sse.Event)
 			}
-			if !yield(event, nil) {
+			terminal = event.Terminal()
+			if !yield(event, nil) || terminal {
 				return
 			}
 		}
 	}
+}
+
+func (c *Client) transport() (*deepseek.Client, string, error) {
+	if c == nil || c.core == nil {
+		return nil, "", errors.New("responses: nil deepseek client")
+	}
+	return c.core, c.url, nil
 }
 
 // splitExtra returns the top-level JSON fields of data that are not modelled by

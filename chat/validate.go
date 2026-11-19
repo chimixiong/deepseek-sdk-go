@@ -36,6 +36,9 @@ func (r *Request) validate(streaming bool) error {
 			}
 		}
 	}
+	if err := validateToolCallPairs(r.Messages); err != nil {
+		return err
+	}
 	if len(r.Stop) > 16 {
 		return deepseek.Invalid("stop", "contains %d entries, maximum is 16", len(r.Stop))
 	}
@@ -205,6 +208,68 @@ func declaredFunctionTool(tools []Tool, name string) bool {
 	return false
 }
 
+// validateToolCallPairs enforces the protocol rule that every assistant
+// tool_calls entry is answered by a matching tool message immediately after it,
+// in order, and that tool messages have a preceding call.
+func validateToolCallPairs(messages []Message) error {
+	pending := map[string]bool{}
+	var order []string
+	for i, message := range messages {
+		field := fmt.Sprintf("messages[%d]", i)
+		switch message.Role {
+		case RoleAssistant:
+			if missing := firstPending(pending, order); missing != "" {
+				return deepseek.Invalid(field, "missing tool message for tool_call_id %q", missing)
+			}
+			clear(pending)
+			order = order[:0]
+			for j, call := range message.ToolCalls {
+				callField := fmt.Sprintf("%s.tool_calls[%d]", field, j)
+				if call.ID == "" {
+					return deepseek.Invalid(callField+".id", "is required")
+				}
+				if call.Type != "function" {
+					return deepseek.Invalid(callField+".type", "must be %q, got %q", "function", call.Type)
+				}
+				if call.Function.Name == "" {
+					return deepseek.Invalid(callField+".function.name", "is required")
+				}
+				if pending[call.ID] {
+					return deepseek.Invalid(callField+".id", "duplicate tool call id %q", call.ID)
+				}
+				pending[call.ID] = true
+				order = append(order, call.ID)
+			}
+		case RoleTool:
+			if !pending[message.ToolCallID] {
+				return deepseek.Invalid(field+".tool_call_id", "does not match a tool call in the preceding assistant message")
+			}
+			delete(pending, message.ToolCallID)
+		default:
+			if len(order) > 0 {
+				if missing := firstPending(pending, order); missing != "" {
+					return deepseek.Invalid(field, "missing tool message for tool_call_id %q", missing)
+				}
+			}
+		}
+	}
+	if len(order) > 0 {
+		if missing := firstPending(pending, order); missing != "" {
+			return deepseek.Invalid("messages", "missing tool message for tool_call_id %q", missing)
+		}
+	}
+	return nil
+}
+
+func firstPending(pending map[string]bool, order []string) string {
+	for _, id := range order {
+		if pending[id] {
+			return id
+		}
+	}
+	return ""
+}
+
 func validateMessage(index int, m Message) error {
 	field := fmt.Sprintf("messages[%d]", index)
 	switch m.Role {
@@ -242,7 +307,9 @@ func validateMessage(index int, m Message) error {
 		if len(m.ToolCalls) > 0 {
 			return deepseek.Invalid(field+".tool_calls", "is not valid on a tool message")
 		}
-		if err := validateContent(field+".content", m.Content, false, false); err != nil {
+		// A tool may legitimately produce no output; an empty string is the
+		// documented representation of that result.
+		if err := validateContent(field+".content", m.Content, false, true); err != nil {
 			return err
 		}
 	case RoleLatestReminder:

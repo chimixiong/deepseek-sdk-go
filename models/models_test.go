@@ -129,3 +129,10 @@ func TestNewNilClient(t *testing.T) {
 		t.Fatal("New(nil) did not install a default transport client")
 	}
 }
+
+func TestNilClientList(t *testing.T) {
+	var client *Client
+	if _, err := client.List(context.Background()); err == nil {
+		t.Fatal("List on a nil client returned no error")
+	}
+}

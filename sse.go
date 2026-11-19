@@ -2,8 +2,11 @@ package deepseek
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -146,4 +149,48 @@ func (s *Stream) Close() error {
 	err := s.body.Close()
 	s.body = nil
 	return err
+}
+
+// maxStreamErrorBody bounds the non-SSE body read for an error message.
+const maxStreamErrorBody = 64 << 10
+
+// IsEventStream reports whether contentType is text/event-stream.
+func IsEventStream(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && mediaType == "text/event-stream"
+}
+
+// StreamContentTypeError turns a 2xx streaming response that is not
+// text/event-stream into an APIError that keeps the server's message and
+// request id, instead of losing them in a bare truncated-stream error. The
+// caller keeps ownership of resp and body.
+func StreamContentTypeError(resp *http.Response, body []byte) error {
+	var wire struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	apiErr := &APIError{
+		StatusCode: resp.StatusCode,
+		RequestID: firstNonEmpty(
+			resp.Header.Get("x-request-id"),
+			resp.Header.Get("x-ds-trace-id"),
+			resp.Header.Get("request-id"),
+		),
+		Body: body,
+	}
+	if json.Unmarshal(body, &wire) == nil && wire.Error != nil {
+		apiErr.Message, apiErr.Type, apiErr.Code, apiErr.Param =
+			wire.Error.Message, wire.Error.Type, wire.Error.Code, wire.Error.Param
+	} else {
+		apiErr.Message = strings.TrimSpace(string(body))
+	}
+	if apiErr.Message == "" {
+		apiErr.Message = "response is not text/event-stream"
+	}
+	apiErr.Message = fmt.Sprintf("expected text/event-stream, got %q: %s", resp.Header.Get("Content-Type"), apiErr.Message)
+	return apiErr
 }

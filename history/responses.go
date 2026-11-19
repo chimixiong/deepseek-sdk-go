@@ -171,37 +171,53 @@ func ToResponses(transcript Transcript, options Options) (string, []responses.In
 		switch turn.Role {
 		case RoleAssistant:
 			pending = map[string]bool{}
-			text := Texts(turn.Parts)
-			if text != "" {
+			var text strings.Builder
+			hasItem := false
+			flushText := func() {
+				if text.Len() == 0 {
+					return
+				}
 				items = append(items, responses.InputItem{
 					Type:    responses.ItemMessage,
 					Role:    responses.RoleAssistant,
-					Content: &responses.Content{Parts: []responses.ContentPart{responses.OutputTextPart(text)}},
+					Content: &responses.Content{Parts: []responses.ContentPart{responses.OutputTextPart(text.String())}},
 				})
+				text.Reset()
+				hasItem = true
 			}
 			for _, part := range turn.Parts {
-				if part.ToolCall == nil {
+				switch {
+				case part.Text != nil:
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(*part.Text)
+				case part.ToolCall != nil:
+					if part.ToolCall.ID == "" {
+						warnings = append(warnings, warning(index, "call_id", "tool call without id dropped"))
+						continue
+					}
+					flushText()
+					arguments, ok := toolInput(part.ToolCall.Arguments)
+					if !ok {
+						warnings = append(warnings, warning(index, "tool_call.arguments", "arguments are not a JSON object; sent {}"))
+					}
+					items = append(items, responses.InputItem{
+						Type:      responses.ItemFunctionCall,
+						CallID:    part.ToolCall.ID,
+						Name:      part.ToolCall.Name,
+						Arguments: string(arguments),
+					})
+					pending[part.ToolCall.ID] = true
+					hasItem = true
+				default:
 					if part.Image != nil || part.File != nil || part.ToolResult != nil {
 						warnings = append(warnings, warning(index, "assistant.content", "non-text part dropped from an assistant turn"))
 					}
-					continue
 				}
-				if part.ToolCall.ID == "" {
-					warnings = append(warnings, warning(index, "call_id", "tool call without id dropped"))
-					continue
-				}
-				if !json.Valid(part.ToolCall.Arguments) {
-					warnings = append(warnings, warning(index, "tool_call.arguments", "arguments are not valid JSON"))
-				}
-				items = append(items, responses.InputItem{
-					Type:      responses.ItemFunctionCall,
-					CallID:    part.ToolCall.ID,
-					Name:      part.ToolCall.Name,
-					Arguments: string(part.ToolCall.Arguments),
-				})
-				pending[part.ToolCall.ID] = true
 			}
-			if text == "" && !hasToolCall(turn.Parts) {
+			flushText()
+			if !hasItem {
 				warnings = append(warnings, warning(index, "assistant", "empty turn dropped"))
 			}
 		case RoleUser:
@@ -269,15 +285,6 @@ func userContentParts(parts []Part, index int) ([]Part, []Warning) {
 	return out, warnings
 }
 
-func hasToolCall(parts []Part) bool {
-	for _, part := range parts {
-		if part.ToolCall != nil {
-			return true
-		}
-	}
-	return false
-}
-
 func responsesContent(parts []responses.ContentPart) responses.Content {
 	if len(parts) == 1 && (parts[0].Type == responses.PartInputText || parts[0].Type == responses.PartOutputText) {
 		return responses.TextContent(parts[0].Text)
@@ -303,7 +310,12 @@ func irPartsToResponses(parts []Part, index int, options Options) ([]responses.C
 				warnings = append(warnings, warning(index, "image", "image has no URL, data or file id; dropped"))
 				continue
 			}
-			out = append(out, responsesImagePart(*part.Image))
+			converted, reason := responsesImagePart(*part.Image)
+			if reason != "" {
+				warnings = append(warnings, warning(index, "image", reason))
+				continue
+			}
+			out = append(out, converted)
 		case part.File != nil:
 			if part.File.FileID == "" {
 				warnings = append(warnings, warning(index, "file", "Responses input_file requires an uploaded file id; inline document dropped"))
@@ -317,19 +329,19 @@ func irPartsToResponses(parts []Part, index int, options Options) ([]responses.C
 	return out, warnings
 }
 
-func responsesImagePart(image Image) responses.ContentPart {
+func responsesImagePart(image Image) (responses.ContentPart, string) {
 	switch {
 	case image.FileID != "":
-		return responses.InputImageFilePart(image.FileID, responses.ImageDetail(image.Detail))
+		return responses.InputImageFilePart(image.FileID, responses.ImageDetail(image.Detail)), ""
 	case len(image.Data) > 0:
-		mediaType := image.MediaType
-		if mediaType == "" {
-			mediaType = "application/octet-stream"
+		mediaType, ok := imageMediaType(image)
+		if !ok {
+			return responses.ContentPart{}, "inline image media type could not be determined; dropped"
 		}
 		url := "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)
-		return responses.InputImagePart(url, responses.ImageDetail(image.Detail))
+		return responses.InputImagePart(url, responses.ImageDetail(image.Detail)), ""
 	default:
-		return responses.InputImagePart(image.URL, responses.ImageDetail(image.Detail))
+		return responses.InputImagePart(image.URL, responses.ImageDetail(image.Detail)), ""
 	}
 }
 

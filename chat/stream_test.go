@@ -325,3 +325,20 @@ func TestStreamAccumulatorCanBeCopied(t *testing.T) {
 		t.Fatalf("content = %q", got)
 	}
 }
+
+func TestAccumulateObjectIsCompletion(t *testing.T) {
+	response, err := chat.Accumulate(chunkSeq(chat.Chunk{
+		ID:     "c",
+		Object: "chat.completion.chunk",
+		Choices: []chat.ChunkChoice{{
+			Index: 0,
+			Delta: chat.Delta{Content: new("hi")},
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("Accumulate: %v", err)
+	}
+	if response.Object != "chat.completion" {
+		t.Fatalf("object = %q, want chat.completion", response.Object)
+	}
+}

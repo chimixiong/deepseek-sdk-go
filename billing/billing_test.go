@@ -67,3 +67,10 @@ func TestNewNilClient(t *testing.T) {
 		t.Fatal("New(nil) did not install a default transport client")
 	}
 }
+
+func TestNilClientGetBalance(t *testing.T) {
+	var client *Client
+	if _, err := client.GetBalance(context.Background()); err == nil {
+		t.Fatal("GetBalance on a nil client returned no error")
+	}
+}

@@ -91,6 +91,7 @@ func ToMessages(transcript Transcript, options Options) (*messages.Content, []me
 		case RoleAssistant:
 			blocks, turnWarnings := irPartsToMessages(turn.Parts, index, options)
 			warnings = append(warnings, turnWarnings...)
+			blocks = dropEmptyText(blocks, index, &warnings)
 			var filtered []messages.Block
 			for _, block := range blocks {
 				if block.Type == messages.BlockText || block.Type == messages.BlockToolUse {
@@ -117,6 +118,7 @@ func ToMessages(transcript Transcript, options Options) (*messages.Content, []me
 		case RoleUser:
 			blocks, turnWarnings := messagesUserBlocks(turn.Parts, index, options, pending)
 			warnings = append(warnings, turnWarnings...)
+			blocks = dropEmptyText(blocks, index, &warnings)
 			if len(blocks) == 0 {
 				warnings = append(warnings, warning(index, "user", "empty turn dropped"))
 				continue
@@ -203,12 +205,31 @@ func filterToolResultBlocks(blocks []messages.Block, index int, warnings *[]Warn
 	var kept []messages.Block
 	for _, block := range blocks {
 		switch block.Type {
-		case messages.BlockText, messages.BlockImage:
+		case messages.BlockText:
+			if block.Text == "" {
+				*warnings = append(*warnings, warning(index, "text", "empty text block dropped"))
+				continue
+			}
+			kept = append(kept, block)
+		case messages.BlockImage:
 			kept = append(kept, block)
 		default:
 			*warnings = append(*warnings, warning(index, "tool_result.content",
 				fmt.Sprintf("%s blocks are not allowed in tool_result content; dropped", block.Type)))
 		}
+	}
+	return kept
+}
+
+// dropEmptyText removes empty text blocks, which the Messages API rejects.
+func dropEmptyText(blocks []messages.Block, index int, warnings *[]Warning) []messages.Block {
+	var kept []messages.Block
+	for _, block := range blocks {
+		if block.Type == messages.BlockText && block.Text == "" {
+			*warnings = append(*warnings, warning(index, "text", "empty text block dropped"))
+			continue
+		}
+		kept = append(kept, block)
 	}
 	return kept
 }
@@ -231,7 +252,12 @@ func irPartsToMessages(parts []Part, index int, options Options) ([]messages.Blo
 				warnings = append(warnings, warning(index, "image", "image has no URL, data or file id; dropped"))
 				continue
 			}
-			blocks = append(blocks, messages.Block{Type: messages.BlockImage, Source: messagesImageSource(*part.Image)})
+			source, reason := messagesImageSource(*part.Image)
+			if reason != "" {
+				warnings = append(warnings, warning(index, "image", reason))
+				continue
+			}
+			blocks = append(blocks, messages.Block{Type: messages.BlockImage, Source: source})
 		case part.File != nil:
 			block, ok := messagesDocumentBlock(*part.File)
 			if !ok {
@@ -269,22 +295,22 @@ func toolInput(arguments json.RawMessage) (json.RawMessage, bool) {
 	return append(json.RawMessage(nil), trimmed...), true
 }
 
-func messagesImageSource(image Image) *messages.Source {
+func messagesImageSource(image Image) (*messages.Source, string) {
 	switch {
 	case image.FileID != "":
-		return &messages.Source{Type: messages.SourceFile, FileID: image.FileID}
+		return &messages.Source{Type: messages.SourceFile, FileID: image.FileID}, ""
 	case len(image.Data) > 0:
-		mediaType := image.MediaType
-		if mediaType == "" {
-			mediaType = "image/jpeg"
+		mediaType, ok := imageMediaType(image)
+		if !ok {
+			return nil, "inline image media type could not be determined; dropped"
 		}
 		return &messages.Source{
 			Type:      messages.SourceBase64,
 			MediaType: mediaType,
 			Data:      base64.StdEncoding.EncodeToString(image.Data),
-		}
+		}, ""
 	default:
-		return &messages.Source{Type: messages.SourceURL, URL: image.URL}
+		return &messages.Source{Type: messages.SourceURL, URL: image.URL}, ""
 	}
 }
 

@@ -121,14 +121,14 @@ func ToChat(transcript Transcript, options Options) ([]chat.Message, []Warning) 
 					}
 					continue
 				}
-				arguments := string(part.ToolCall.Arguments)
-				if !json.Valid(part.ToolCall.Arguments) {
-					warnings = append(warnings, warning(index, "tool_call.arguments", "arguments are not valid JSON"))
+				arguments, ok := toolInput(part.ToolCall.Arguments)
+				if !ok {
+					warnings = append(warnings, warning(index, "tool_call.arguments", "arguments are not a JSON object; sent {}"))
 				}
 				message.ToolCalls = append(message.ToolCalls, chat.ToolCall{
 					ID:       part.ToolCall.ID,
 					Type:     "function",
-					Function: chat.FunctionCall{Name: part.ToolCall.Name, Arguments: arguments},
+					Function: chat.FunctionCall{Name: part.ToolCall.Name, Arguments: string(arguments)},
 				})
 				if part.ToolCall.ID != "" {
 					pending[part.ToolCall.ID] = true
@@ -216,6 +216,11 @@ func chatToolContent(parts []Part, index int, options Options, warnings *[]Warni
 }
 
 func chatContent(parts []chat.ContentPart) chat.Content {
+	if len(parts) == 0 {
+		// Tool results may legitimately carry no output. An empty string is the
+		// documented representation and validates, unlike a nil block array.
+		return chat.TextContent("")
+	}
 	if len(parts) == 1 && parts[0].Type == chat.PartText {
 		return chat.TextContent(parts[0].Text)
 	}
@@ -287,27 +292,34 @@ func irPartToChat(part Part, index int, options Options) ([]chat.ContentPart, []
 		if !imageHasContent(*part.Image) {
 			return nil, []Warning{warning(index, "image", "image has no URL, data or file id; dropped")}
 		}
-		return []chat.ContentPart{chatImagePart(*part.Image, index)}, nil
+		converted, reason := chatImagePart(*part.Image)
+		if reason != "" {
+			return nil, []Warning{warning(index, "image", reason)}
+		}
+		return []chat.ContentPart{converted}, nil
 	case part.File != nil:
+		if part.File.FileID == "" && len(part.File.Data) == 0 {
+			return nil, []Warning{warning(index, "file", "file has no file id or data; dropped")}
+		}
 		return []chat.ContentPart{chat.FilePart(chatFileRef(*part.File))}, nil
 	default:
 		return nil, []Warning{warning(index, "part", "part is not representable in Chat Completions")}
 	}
 }
 
-func chatImagePart(image Image, index int) chat.ContentPart {
+func chatImagePart(image Image) (chat.ContentPart, string) {
 	switch {
 	case image.FileID != "":
-		return chat.FilePart(chat.FileRef{FileID: image.FileID})
+		return chat.FilePart(chat.FileRef{FileID: image.FileID}), ""
 	case len(image.Data) > 0:
-		mediaType := image.MediaType
-		if mediaType == "" {
-			mediaType = "application/octet-stream"
+		mediaType, ok := imageMediaType(image)
+		if !ok {
+			return chat.ContentPart{}, "inline image media type could not be determined; dropped"
 		}
 		url := "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)
-		return chat.ImagePart(url, image.Detail)
+		return chat.ImagePart(url, image.Detail), ""
 	default:
-		return chat.ImagePart(image.URL, image.Detail)
+		return chat.ImagePart(image.URL, image.Detail), ""
 	}
 }
 

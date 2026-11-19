@@ -386,3 +386,21 @@ func TestAccumulateStopsAtTerminalEvent(t *testing.T) {
 		t.Fatalf("response = %+v, want the terminal response", resp)
 	}
 }
+
+func TestCreateStreamWithoutTerminalEventYieldsError(t *testing.T) {
+	client := streamingClient(t, []sseEvent{
+		eventJSON(string(responses.EventCreated), `"response":`+streamCreatedResponse, `"sequence_number":0`),
+	})
+	var got error
+	for _, err := range client.CreateStream(context.Background(), &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+	}) {
+		if err != nil {
+			got = err
+		}
+	}
+	if got == nil || !strings.Contains(got.Error(), "terminal") {
+		t.Fatalf("err = %v, want a missing terminal event error", got)
+	}
+}

@@ -325,6 +325,19 @@ func TestNewNilClient(t *testing.T) {
 	}
 }
 
+func TestNilClientMethods(t *testing.T) {
+	var client *Client
+	if _, err := client.List(context.Background(), nil); err == nil {
+		t.Fatal("List on a nil client returned no error")
+	}
+	if _, err := client.Retrieve(context.Background(), "file-1"); err == nil {
+		t.Fatal("Retrieve on a nil client returned no error")
+	}
+	if _, err := client.Delete(context.Background(), "file-1"); err == nil {
+		t.Fatal("Delete on a nil client returned no error")
+	}
+}
+
 func TestFileSizeLimit(t *testing.T) {
 	tests := []struct {
 		contentType string

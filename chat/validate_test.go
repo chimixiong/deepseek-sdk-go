@@ -62,8 +62,33 @@ func TestValidate(t *testing.T) {
 			r.Messages = []chat.Message{{Role: chat.RoleAssistant, Content: chat.NullContent()}}
 		}, "tool_calls"},
 		{"empty tool content", func(r *chat.Request) {
-			r.Messages = append(r.Messages, chat.ToolMessage("call_1", chat.TextContent("")))
-		}, "content"},
+			r.Messages = []chat.Message{
+				chat.UserMessage("hello"),
+				{Role: chat.RoleAssistant, ToolCalls: []chat.ToolCall{{
+					ID: "call_1", Type: "function", Function: chat.FunctionCall{Name: "f"},
+				}}},
+				chat.ToolMessage("call_1", chat.TextContent("")),
+			}
+		}, ""},
+		{"unpaired tool", func(r *chat.Request) {
+			r.Messages = append(r.Messages, chat.ToolMessage("call_1", chat.TextContent("x")))
+		}, "tool_call_id"},
+		{"tool call without id", func(r *chat.Request) {
+			r.Messages = []chat.Message{
+				chat.UserMessage("hello"),
+				{Role: chat.RoleAssistant, ToolCalls: []chat.ToolCall{{
+					Type: "function", Function: chat.FunctionCall{Name: "f"},
+				}}},
+			}
+		}, "id"},
+		{"missing tool reply", func(r *chat.Request) {
+			r.Messages = []chat.Message{
+				chat.UserMessage("hello"),
+				{Role: chat.RoleAssistant, ToolCalls: []chat.ToolCall{{
+					ID: "call_1", Type: "function", Function: chat.FunctionCall{Name: "f"},
+				}}},
+			}
+		}, "missing tool message"},
 		{"latest_reminder tool calls", func(r *chat.Request) {
 			reminder := chat.LatestReminderMessage("2026-11-18, Wednesday, Singapore, Web, English")
 			reminder.ToolCalls = []chat.ToolCall{{ID: "call_1", Type: "function"}}

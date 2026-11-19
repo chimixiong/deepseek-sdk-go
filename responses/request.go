@@ -72,8 +72,8 @@ func (r *Request) Validate() error {
 	if r.Temperature != nil && (*r.Temperature < 0 || *r.Temperature > 2) {
 		return deepseek.Invalid("temperature", "must be between 0 and 2, got %v", *r.Temperature)
 	}
-	if r.TopP != nil && (*r.TopP <= 0 || *r.TopP > 1) {
-		return deepseek.Invalid("top_p", "must be greater than 0 and at most 1")
+	if r.TopP != nil && (*r.TopP < 0 || *r.TopP > 1) {
+		return deepseek.Invalid("top_p", "must be between 0 and 1")
 	}
 	if r.TopLogprobs != nil && (*r.TopLogprobs < 0 || *r.TopLogprobs > 20) {
 		return deepseek.Invalid("top_logprobs", "must be between 0 and 20, got %d", *r.TopLogprobs)

@@ -7,6 +7,7 @@ package fim
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -41,12 +42,16 @@ func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	if req.StreamOptions != nil {
 		return nil, deepseek.Invalid("stream_options", "requires CreateStream")
 	}
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	body := *req
 	body.Stream = nil
 	body.StreamOptions = nil
 	var resp Response
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
-		URL:  c.api.FIMURL(),
+	if err := client.DoJSON(ctx, &deepseek.Request{
+		URL:  client.FIMURL(),
 		JSON: &body,
 	}, &resp); err != nil {
 		return nil, err
@@ -60,6 +65,10 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) (*Stream, error
 	if req == nil {
 		return nil, deepseek.Invalid("request", "must not be nil")
 	}
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	body := *req
 	body.Stream = new(true)
 	options := StreamOptions{}
@@ -71,8 +80,8 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) (*Stream, error
 	if err := body.Validate(); err != nil {
 		return nil, err
 	}
-	stream, err := c.api.OpenStream(ctx, &deepseek.Request{
-		URL:  c.api.FIMURL(),
+	stream, err := client.OpenStream(ctx, &deepseek.Request{
+		URL:  client.FIMURL(),
 		JSON: &body,
 	})
 	if err != nil {
@@ -85,16 +94,24 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) (*Stream, error
 // non-streaming response with partial choice text.
 type Stream struct {
 	stream *deepseek.Stream
+	done   bool
 }
 
-// Next returns the next chunk, or io.EOF after the [DONE] terminator.
+// Next returns the next chunk, or io.EOF after the [DONE] terminator. A stream
+// that ends before [DONE], for example because the connection dropped, returns
+// an error instead of io.EOF so a truncated completion is never mistaken for a
+// complete one.
 func (s *Stream) Next() (*Response, error) {
 	for {
 		event, err := s.stream.Next()
+		if err == io.EOF && !s.done {
+			return nil, errors.New("deepseek/fim: stream ended before [DONE]")
+		}
 		if err != nil {
 			return nil, err
 		}
 		if string(event.Data) == "[DONE]" {
+			s.done = true
 			return nil, io.EOF
 		}
 		if len(event.Data) == 0 {
@@ -110,3 +127,10 @@ func (s *Stream) Next() (*Response, error) {
 
 // Close releases the underlying response body.
 func (s *Stream) Close() error { return s.stream.Close() }
+
+func (c *Client) transport() (*deepseek.Client, error) {
+	if c == nil || c.api == nil {
+		return nil, errors.New("fim: nil deepseek client")
+	}
+	return c.api, nil
+}

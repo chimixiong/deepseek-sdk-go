@@ -93,16 +93,26 @@ func (c *Client) DoJSON(ctx context.Context, req *Request, out any) error {
 
 // OpenStream sends the request and returns the server-sent event stream.
 // Retries the initial call only; once events flow, errors surface from
-// Stream.Next. The caller must Close the stream.
+// Stream.Next. The caller must Close the stream. A 2xx response that is not
+// text/event-stream is returned as an APIError that keeps the server's message
+// and request id.
 func (c *Client) OpenStream(ctx context.Context, req *Request) (*Stream, error) {
 	resp, err := c.do(ctx, req, true)
 	if err != nil {
 		return nil, err
 	}
+	if !IsEventStream(resp.Header.Get("Content-Type")) {
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, maxStreamErrorBody))
+		return nil, StreamContentTypeError(resp, data)
+	}
 	return NewStream(resp.Body), nil
 }
 
 func (c *Client) do(ctx context.Context, req *Request, stream bool) (*http.Response, error) {
+	if ctx == nil {
+		return nil, &TransportError{Err: errors.New("net/http: nil Context")}
+	}
 	if req == nil {
 		return nil, errors.New("deepseek: nil request")
 	}

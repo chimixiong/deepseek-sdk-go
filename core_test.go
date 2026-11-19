@@ -536,3 +536,38 @@ func TestAPIErrorMarksTruncatedBody(t *testing.T) {
 		t.Fatalf("error text = %q", apiErr.Error())
 	}
 }
+
+func TestNilContextReturnsTransportError(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	req := &deepseek.Request{URL: server.URL}
+	calls := []func() error{
+		func() error {
+			_, err := client.Do(nil, req)
+			return err
+		},
+		func() error { return client.DoJSON(nil, req, nil) },
+		func() error {
+			_, err := client.OpenStream(nil, req)
+			return err
+		},
+	}
+	for i, call := range calls {
+		err := call()
+		var transportErr *deepseek.TransportError
+		if !errors.As(err, &transportErr) {
+			t.Fatalf("call %d: err = %v, want *deepseek.TransportError", i, err)
+		}
+		if !strings.Contains(err.Error(), "nil Context") {
+			t.Fatalf("call %d: error = %q", i, err)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d, want none", requests.Load())
+	}
+}

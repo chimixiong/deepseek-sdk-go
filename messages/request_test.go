@@ -426,6 +426,20 @@ func TestValidationAcceptsLatestReminderBeforeUser(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsEmptyContent(t *testing.T) {
+	req := validRequest()
+	req.Messages = []Message{{Role: RoleUser, Content: Content{Text: ""}}}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("err = %v, want an empty content error", err)
+	}
+	req.Messages = []Message{{Role: RoleUser, Content: Content{Blocks: []Block{
+		{Type: BlockText, Text: ""},
+	}}}}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("err = %v, want an empty text block error", err)
+	}
+}
+
 func decodeObject(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	var out map[string]any

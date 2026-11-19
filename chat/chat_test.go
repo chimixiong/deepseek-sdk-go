@@ -224,3 +224,47 @@ func TestCreateReturnsGenerationError(t *testing.T) {
 		t.Fatalf("response = %+v, want the billed usage", resp)
 	}
 }
+
+func TestCreateRejectsStream(t *testing.T) {
+	client, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request must not be sent")
+	})
+	_, err := client.Create(context.Background(), &chat.Request{
+		Model:    "deepseek-flash",
+		Messages: []chat.Message{chat.UserMessage("hi")},
+		Stream:   new(true),
+	})
+	if err == nil || !strings.Contains(err.Error(), "CreateStream") {
+		t.Fatalf("err = %v, want a stream validation error", err)
+	}
+}
+
+func TestCreateStreamRejectsNonSSE(t *testing.T) {
+	client, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-1")
+		io.WriteString(w, `{"error":{"message":"backend exploded","type":"server_error"}}`)
+	})
+	var got error
+	for _, err := range client.CreateStream(context.Background(), &chat.Request{
+		Model:    "deepseek-flash",
+		Messages: []chat.Message{chat.UserMessage("hi")},
+	}) {
+		if err != nil {
+			got = err
+		}
+	}
+	if got == nil || !strings.Contains(got.Error(), "backend exploded") || !strings.Contains(got.Error(), "text/event-stream") {
+		t.Fatalf("err = %v, want the server message and content type", got)
+	}
+}
+
+func TestNilClientDoesNotPanic(t *testing.T) {
+	var client *chat.Client
+	if _, err := client.Create(context.Background(), &chat.Request{
+		Model:    "deepseek-flash",
+		Messages: []chat.Message{chat.UserMessage("hi")},
+	}); err == nil {
+		t.Fatal("Create on a nil client returned no error")
+	}
+}

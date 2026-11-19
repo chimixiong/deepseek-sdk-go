@@ -28,7 +28,7 @@ func (r *ASRRequest) Validate() error {
 		return deepseek.Invalid("file", "must not be empty")
 	}
 	if len(r.File) > maxASRBytes {
-		return deepseek.Invalid("file", "must be at most %d MiB, got %d", maxASRBytes>>20, len(r.File)>>20)
+		return deepseek.Invalid("file", "must be at most %d bytes (%d MiB), got %d bytes", maxASRBytes, maxASRBytes>>20, len(r.File))
 	}
 	if r.Filename == "" {
 		return deepseek.Invalid("filename", "must not be empty")

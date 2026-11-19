@@ -3,6 +3,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/chimixiong/deepseek-sdk-go"
@@ -24,12 +25,23 @@ func New(c *deepseek.Client) *Client {
 
 // List returns the models available to the account.
 func (c *Client) List(ctx context.Context) (*ListResponse, error) {
+	client, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	var resp ListResponse
-	if err := c.api.DoJSON(ctx, &deepseek.Request{
+	if err := client.DoJSON(ctx, &deepseek.Request{
 		Method: http.MethodGet,
-		URL:    c.api.ModelsURL(),
+		URL:    client.ModelsURL(),
 	}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+func (c *Client) transport() (*deepseek.Client, error) {
+	if c == nil || c.api == nil {
+		return nil, errors.New("models: nil deepseek client")
+	}
+	return c.api, nil
 }

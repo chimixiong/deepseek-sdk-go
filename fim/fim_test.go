@@ -297,3 +297,32 @@ func TestNewNilClient(t *testing.T) {
 		t.Fatal("New(nil) did not install a default transport client")
 	}
 }
+
+func TestStreamTruncatedBeforeDone(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"text\":\"half\",\"index\":0}]}\n\n")
+	})
+	stream, err := client.CreateStream(context.Background(), &Request{Model: "deepseek-flash", Prompt: "x"})
+	if err != nil {
+		t.Fatalf("CreateStream: %v", err)
+	}
+	defer stream.Close()
+	if _, err := stream.Next(); err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+	_, err = stream.Next()
+	if err == nil || errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "before [DONE]") {
+		t.Fatalf("Next after truncation = %v, want a non-EOF error", err)
+	}
+}
+
+func TestNilClientDoesNotPanic(t *testing.T) {
+	var client *Client
+	if _, err := client.Create(context.Background(), &Request{Model: "m", Prompt: "p"}); err == nil {
+		t.Fatal("Create on a nil client returned no error")
+	}
+	if _, err := client.CreateStream(context.Background(), &Request{Model: "m", Prompt: "p"}); err == nil {
+		t.Fatal("CreateStream on a nil client returned no error")
+	}
+}

@@ -1,6 +1,7 @@
 package responses_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -151,23 +152,53 @@ func TestRequestToolChoiceNullStaysOmitted(t *testing.T) {
 	}
 }
 
-func TestTopPRejectsZero(t *testing.T) {
+func TestTopPAcceptsZero(t *testing.T) {
 	req := &responses.Request{
 		Model: "deepseek-flash",
 		Input: responses.StringInput("hi"),
 		TopP:  new(0.0),
 	}
-	if err := req.Validate(); err == nil {
-		t.Fatal("Validate accepted top_p 0")
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate top_p 0: %v", err)
 	}
 	req.TopP = new(1.0)
 	if err := req.Validate(); err != nil {
-		t.Errorf("Validate top_p 1: %v", err)
+		t.Fatalf("Validate top_p 1: %v", err)
+	}
+	req.TopP = new(1.1)
+	if err := req.Validate(); err == nil {
+		t.Fatal("Validate accepted top_p 1.1")
+	}
+	req.TopP = new(-0.1)
+	if err := req.Validate(); err == nil {
+		t.Fatal("Validate accepted top_p -0.1")
 	}
 }
 
 func TestNewNilClient(t *testing.T) {
 	if client := responses.New(nil); client == nil {
 		t.Fatal("New(nil) = nil")
+	}
+}
+
+func TestNilClientMethods(t *testing.T) {
+	var client *responses.Client
+	if _, err := client.Create(context.Background(), &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+	}); err == nil {
+		t.Fatal("Create on a nil client returned no error")
+	}
+	var got error
+	for _, err := range client.CreateStream(context.Background(), &responses.Request{
+		Model: "deepseek-flash",
+		Input: responses.StringInput("hi"),
+	}) {
+		if err != nil {
+			got = err
+		}
+	}
+	if got == nil {
+		t.Fatal("CreateStream on a nil client returned no error")
 	}
 }

@@ -74,7 +74,7 @@ func (r *CreateRequest) Validate() error {
 		return deepseek.Invalid("file", "content is required")
 	}
 	if limit := fileSizeLimit(r.ContentType, r.Filename); len(r.File) > limit {
-		return deepseek.Invalid("file", "content must be at most %d MiB for this file type, got %d MiB", limit>>20, len(r.File)>>20)
+		return deepseek.Invalid("file", "content must be at most %d bytes (%d MiB) for this file type, got %d bytes", limit, limit>>20, len(r.File))
 	}
 	if r.ExpiresAfter != nil {
 		if r.ExpiresAfter.Anchor != "" && r.ExpiresAfter.Anchor != AnchorCreatedAt {

@@ -11,6 +11,8 @@ package history
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 )
 
 // Role is a neutral speaker.
@@ -179,4 +181,22 @@ func unpairedResultReason(callID string) string {
 // converted without fabricating an empty URL.
 func imageHasContent(image Image) bool {
 	return image.URL != "" || image.FileID != "" || len(image.Data) > 0
+}
+
+// imageMediaType returns the declared media type or one detected from the
+// inline bytes. The second result is false when the bytes are not a recognised
+// image, so callers can drop the image with a warning instead of fabricating a
+// type that the target protocol may reject.
+func imageMediaType(image Image) (string, bool) {
+	if image.MediaType != "" {
+		return image.MediaType, true
+	}
+	if len(image.Data) == 0 {
+		return "", false
+	}
+	detected := http.DetectContentType(image.Data)
+	if strings.HasPrefix(detected, "image/") {
+		return detected, true
+	}
+	return "", false
 }

@@ -389,6 +389,9 @@ func validateMessages(messages []Message) error {
 		if message.Content.Blocks != nil && len(message.Content.Blocks) == 0 {
 			return deepseek.Invalid(field+".content", "block array must contain at least one block")
 		}
+		if message.Content.Blocks == nil && message.Content.Text == "" {
+			return deepseek.Invalid(field+".content", "must not be empty")
+		}
 		if message.Role == RoleLatestReminder {
 			if message.Content.Blocks != nil {
 				return deepseek.Invalid(field+".content", "latest_reminder content must be a string")
@@ -437,6 +440,9 @@ func validateReminderContent(field, content string) error {
 func validateBlock(field string, block Block) error {
 	switch block.Type {
 	case BlockText:
+		if block.Text == "" {
+			return deepseek.Invalid(field+".text", "must not be empty")
+		}
 		return nil
 	case BlockImage:
 		if block.Source == nil {
@@ -463,6 +469,9 @@ func validateBlock(field string, block Block) error {
 				innerField := fmt.Sprintf("%s.content[%d]", field, i)
 				switch inner.Type {
 				case BlockText:
+					if inner.Text == "" {
+						return deepseek.Invalid(innerField+".text", "must not be empty")
+					}
 				case BlockImage:
 					if inner.Source == nil {
 						return deepseek.Invalid(innerField+".source", "image blocks require a source")

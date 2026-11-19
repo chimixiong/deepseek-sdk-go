@@ -45,12 +45,19 @@ func (c *Client) Create(ctx context.Context, req *Request) (*Response, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
+	core, url, err := c.transport()
+	if err != nil {
+		return nil, err
+	}
 	if err := c.validateTransport(req); err != nil {
 		return nil, err
 	}
+	if req.Stream != nil && *req.Stream {
+		return nil, deepseek.Invalid("stream", "must be false; use CreateStream for streaming")
+	}
 	wire := req.prepared(false)
 	var resp Response
-	if err := c.core.DoJSON(ctx, &deepseek.Request{URL: c.url, JSON: wire}, &resp); err != nil {
+	if err := core.DoJSON(ctx, &deepseek.Request{URL: url, JSON: wire}, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Error != nil {
@@ -71,12 +78,17 @@ func (c *Client) CreateStream(ctx context.Context, req *Request) iter.Seq2[Chunk
 			yield(Chunk{}, err)
 			return
 		}
+		core, url, err := c.transport()
+		if err != nil {
+			yield(Chunk{}, err)
+			return
+		}
 		if err := c.validateTransport(req); err != nil {
 			yield(Chunk{}, err)
 			return
 		}
 		wire := req.prepared(true)
-		stream, err := c.core.OpenStream(ctx, &deepseek.Request{URL: c.url, JSON: wire})
+		stream, err := core.OpenStream(ctx, &deepseek.Request{URL: url, JSON: wire})
 		if err != nil {
 			yield(Chunk{}, err)
 			return
@@ -142,4 +154,11 @@ func (c *Client) validateTransport(req *Request) error {
 		}
 	}
 	return nil
+}
+
+func (c *Client) transport() (*deepseek.Client, string, error) {
+	if c == nil || c.core == nil {
+		return nil, "", errors.New("chat: nil deepseek client")
+	}
+	return c.core, c.url, nil
 }

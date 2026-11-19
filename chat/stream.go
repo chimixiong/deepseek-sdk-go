@@ -52,7 +52,6 @@ type Delta struct {
 // strings.Builder.
 type StreamAccumulator struct {
 	id          string
-	object      string
 	created     int64
 	model       string
 	fingerprint string
@@ -96,9 +95,6 @@ func (a *StreamAccumulator) choice(index int) *streamChoice {
 func (a *StreamAccumulator) Add(chunk Chunk) {
 	if a.id == "" {
 		a.id = chunk.ID
-	}
-	if a.object == "" {
-		a.object = chunk.Object
 	}
 	if a.created == 0 {
 		a.created = chunk.Created
@@ -203,7 +199,7 @@ func (a *StreamAccumulator) Response() *Response {
 	}
 	return &Response{
 		ID:                a.id,
-		Object:            a.object,
+		Object:            "chat.completion",
 		Created:           a.created,
 		Model:             a.model,
 		SystemFingerprint: a.fingerprint,
